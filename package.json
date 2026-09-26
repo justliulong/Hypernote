@@ -102,6 +102,27 @@
       "synopsis": "Notes in HTML with live preview",
       "description": "Folder-based notes in HTML — write notes that can run code."
     },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "alsa-lib",
+        "libcups",
+        "mesa",
+        "systemd-libs",
+        "libxcomposite",
+        "libxdamage",
+        "libxrandr",
+        "libxkbcommon",
+        "libxss",
+        "libxtst",
+        "libnotify",
+        "at-spi2-core",
+        "libsecret",
+        "xdg-utils",
+        "hicolor-icon-theme"
+      ]
+    },
     "win": {
       "target": [
         {

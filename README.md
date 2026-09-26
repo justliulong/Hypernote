@@ -39,22 +39,19 @@ Markdown 很好，但它有天花板。HTML 笔记能做的事：
 
 | 格式 | 适用 | 装法 |
 |------|------|------|
-| **AppImage** | 任何 Linux | `chmod +x Hypernote-*.AppImage && ./Hypernote-*.AppImage` |
-| **deb** | Debian / Ubuntu | `sudo dpkg -i Hypernote-*.deb` |
-| **pacman** | Arch / Manjaro / EndeavourOS | `sudo pacman -U Hypernote-*.pkg.tar.zst` |
+| **AppImage** | 任何 Linux | `chmod +x Hypernote-1.0.0-x86_64.AppImage && ./Hypernote-1.0.0-x86_64.AppImage` |
+| **deb** | Debian / Ubuntu | `sudo dpkg -i Hypernote-1.0.0-amd64.deb` |
+| **pacman** | Arch / Manjaro / EndeavourOS | `sudo pacman -U Hypernote-1.0.0-x64.pacman` |
 
-**Arch 用户**也可以从 AUR 装，之后跟着 `yay` 一起更新：
-
-```bash
-yay -S hypernote-bin
-```
-
-（AUR 包的定义在 [`packaging/aur/`](packaging/aur/)，维护说明见那里的 README。）
+> **Arch 用户**：AUR 包（`hypernote-bin`）已准备好，但 AUR 目前**暂停了新账号注册**
+> （全站措施，应对自动化垃圾注册），所以还没发布上去。发布之后就可以用
+> `yay -S hypernote-bin` 安装并跟随系统更新。在那之前请用上面的 pacman 包。
+> 包定义在 [`packaging/aur/`](packaging/aur/)，维护说明见那里的 README。
 
 ### 从源码运行
 
 ```bash
-git clone <你的仓库地址> && cd hypernote
+git clone https://github.com/justliulong/Hypernote.git && cd Hypernote
 npm install
 
 ./start.sh          # Linux / macOS

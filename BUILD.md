@@ -151,6 +151,22 @@ Windows 包就在真实的 Windows 上打出来，不需要 wine。
 
 配置都在 `package.json` 的 `build` 字段里，几个容易踩的点：
 
+- **`build.pacman.depends` 必须显式声明，别删。** electron-builder 自动给 pacman
+  目标生成的依赖列表是**错的** —— 那是 Electron 自己的构建期依赖
+  （`c-ares`、`ffmpeg`、`http-parser`、`re2`、`snappy`、`libappindicator-gtk3` 等），
+  其中 **`http-parser` 和 `libappindicator-gtk3` 只存在于 AUR**。结果就是用户跑
+  `sudo pacman -U` 会因为依赖不满足直接失败：
+
+  ```
+  error: 无法准备事务处理 (无法满足依赖)
+  :: hypernote: 要求 http-parser
+  ```
+
+  现在配置里那份列表是从二进制的 `DT_NEEDED` 加上运行时才加载的库（`libxss`、
+  `libxtst`、`libnotify`、`xdg-utils` 等）推导出来的，并逐项确认过都在官方仓库里。
+
+  改完记得**实际装一次**验证：`sudo pacman -U dist/Hypernote-*.pacman`。
+
 - **`build.files`** 只收 `node_modules/monaco-editor/min/**/*`。Monaco 整个包很大
   （含 `dev/`、`esm/` 等用不到的目录），只打 `min/` 能省不少体积。如果你新增了前端依赖，
   记得同步这个白名单，否则打包出来的应用会缺文件。

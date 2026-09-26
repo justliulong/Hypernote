@@ -28,7 +28,7 @@ pkgbase = hypernote-bin
 	options = !debug
 	source = hypernote-bin-1.0.0.deb::https://github.com/justliulong/Hypernote/releases/download/v1.0.0/Hypernote-1.0.0-amd64.deb
 	source = LICENSE
-	sha256sums = 6f386d692397531ef46890cef0030ef189407f228ed046a49a178dd401a3e681
+	sha256sums = fe1f2181c06393dcd2022005bffdc410012f912c388b8508902c1707c3aec713
 	sha256sums = 080e474517e1d125b003be32c21fac5419b77727c849d4590ddef0b4abf5d7d5
 
 pkgname = hypernote-bin
