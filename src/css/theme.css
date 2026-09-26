@@ -1,0 +1,217 @@
+/* ═══════════════════════════════════════════════════════
+   theme.css — 设计令牌（颜色 / 间距 / 字体 / 阴影）
+   暗色 = Catppuccin Mocha 调和版，浅色 = Latte 调和版
+   ═══════════════════════════════════════════════════════ */
+
+:root {
+  /* ── 间距刻度（4px 基准） ── */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+  --sp-7: 20px;
+  --sp-8: 24px;
+  --sp-9: 32px;
+
+  /* ── 圆角 ── */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-full: 999px;
+
+  /* ── 字体 ── */
+  --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', 'Noto Sans CJK SC',
+             'Source Han Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono',
+               'DejaVu Sans Mono', Consolas, monospace;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 22px;
+
+  /* ── 结构尺寸 ── */
+  --h-titlebar: 38px;
+  --h-tabs: 34px;
+  --h-statusbar: 24px;
+  --h-bar: 34px;
+
+  /* ── 动效 ── */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 90ms;
+  --dur: 150ms;
+
+  --z-dropdown: 500;
+  --z-modal: 800;
+  --z-toast: 900;
+}
+
+/* ─── 暗色（默认） ─────────────────────────────────────── */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg-app:      #11111b;   /* 最外层 / 状态栏 */
+  --bg-sidebar:  #181825;   /* 侧边栏 / 标签栏 */
+  --bg-editor:   #1e1e2e;   /* 编辑器 */
+  --bg-raised:   #23233a;   /* 浮起表面：菜单、模态 */
+  --bg-input:    #11111b;
+
+  --bg-hover:    rgba(205, 214, 244, 0.055);
+  --bg-active:   rgba(205, 214, 244, 0.095);
+  --bg-selected: rgba(137, 180, 250, 0.14);
+
+  --border:        rgba(205, 214, 244, 0.075);
+  --border-strong: rgba(205, 214, 244, 0.145);
+
+  --text:       #cdd6f4;
+  --text-dim:   #a6adc8;
+  --text-muted: #7f849c;
+  --text-faint: #585b70;
+
+  --accent:      #89b4fa;
+  --accent-soft: rgba(137, 180, 250, 0.16);
+  --accent-fg:   #11111b;
+  --accent-hover:#a3c5fb;
+
+  --ok:      #a6e3a1;
+  --warn:    #f9e2af;
+  --danger:  #f38ba8;
+  --info:    #89dceb;
+
+  --tag-html: #fab387;
+  --tag-css:  #89b4fa;
+  --tag-js:   #f9e2af;
+  --tag-img:  #a6e3a1;
+  --tag-doc:  #cba6f7;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55);
+
+  --scrollbar:       rgba(205, 214, 244, 0.14);
+  --scrollbar-hover: rgba(205, 214, 244, 0.26);
+
+  --preview-bg: #ffffff;
+}
+
+/* ─── 浅色 ─────────────────────────────────────────────── */
+[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-app:      #e6e9ef;
+  --bg-sidebar:  #eff1f5;
+  --bg-editor:   #ffffff;
+  --bg-raised:   #ffffff;
+  --bg-input:    #ffffff;
+
+  --bg-hover:    rgba(76, 79, 105, 0.055);
+  --bg-active:   rgba(76, 79, 105, 0.095);
+  --bg-selected: rgba(30, 102, 245, 0.115);
+
+  --border:        rgba(76, 79, 105, 0.115);
+  --border-strong: rgba(76, 79, 105, 0.21);
+
+  --text:       #4c4f69;
+  --text-dim:   #5c5f77;
+  --text-muted: #8c8fa1;
+  --text-faint: #acb0be;
+
+  --accent:      #1e66f5;
+  --accent-soft: rgba(30, 102, 245, 0.13);
+  --accent-fg:   #ffffff;
+  --accent-hover:#3a7bfa;
+
+  --ok:      #40a02b;
+  --warn:    #df8e1d;
+  --danger:  #d20f39;
+  --info:    #04a5e5;
+
+  --tag-html: #fe640b;
+  --tag-css:  #1e66f5;
+  --tag-js:   #df8e1d;
+  --tag-img:  #40a02b;
+  --tag-doc:  #8839ef;
+
+  --shadow-sm: 0 1px 2px rgba(76, 79, 105, 0.10);
+  --shadow-md: 0 4px 14px rgba(76, 79, 105, 0.14);
+  --shadow-lg: 0 16px 48px rgba(76, 79, 105, 0.20);
+
+  --scrollbar:       rgba(76, 79, 105, 0.20);
+  --scrollbar-hover: rgba(76, 79, 105, 0.34);
+
+  --preview-bg: #ffffff;
+}
+
+/* ─── 全局基础 ─────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  user-select: none;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* 焦点可见性：只在键盘操作时显示 */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--r-sm);
+}
+
+.hidden { display: none !important; }
+
+/* 供屏幕阅读器使用 */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* SVG 图标统一尺寸 */
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  stroke-width: 1.6;
+  pointer-events: none;
+}
+.icon-sm { width: 14px; height: 14px; }
+.icon-lg { width: 20px; height: 20px; }

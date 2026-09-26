@@ -1,0 +1,33 @@
+# ── 依赖 ──
+node_modules/
+
+# ── 打包产物 ──
+dist/
+*.AppImage
+*.deb
+*.rpm
+*.pacman
+*.pkg.tar.zst
+
+# makepkg 的工作目录（packaging/aur 下本地构建时生成）
+packaging/aur/src/
+packaging/aur/pkg/
+
+# ── 编辑器 / 系统 ──
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ── 日志与临时文件 ──
+*.log
+npm-debug.log*
+.npm/
+
+# ── 本地环境 ──
+.env
+.env.local
+
+# 注意：build/ 要提交 —— electron-builder 打包时需要里面的图标

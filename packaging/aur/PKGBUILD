@@ -1,0 +1,76 @@
+# Maintainer: justliulong <justliulong@users.noreply.github.com>
+#
+# 这是 AUR 包 hypernote-bin 的 PKGBUILD。
+#
+# 为什么是 -bin 而不是源码包：这是 Electron 应用，源码构建要在打包时
+# 跑 npm install + electron-builder（下载几百 MB 的 electron 和构建工具），
+# 既慢又依赖网络。AUR 里同类包（visual-studio-code-bin、microsoft-edge-stable-bin）
+# 都是这么做的。
+#
+# 发布新版本时：
+#   1. 改 pkgver，把 pkgrel 重置为 1
+#   2. updpkgsums          （重新计算校验和）
+#   3. makepkg --printsrcinfo > .SRCINFO
+#   4. 推到 aur.archlinux.org/hypernote-bin.git
+
+pkgname=hypernote-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Folder-based notes in HTML, with live preview and full JavaScript support"
+arch=('x86_64')
+url="https://github.com/justliulong/Hypernote"
+license=('MIT')
+depends=(
+  # 直接 DT_NEEDED 的（子依赖如 cairo/pango/glib2/libx11 由 gtk3 带入）
+  'gtk3'
+  'nss'
+  'alsa-lib'
+  'libcups'
+  'mesa'                 # libgbm
+  'systemd-libs'         # libudev
+  'libxcomposite'
+  'libxdamage'
+  'libxrandr'
+  'libxkbcommon'
+  # 运行时才加载的，不在 DT_NEEDED 里，必须显式声明
+  'libxss'
+  'libxtst'
+  'libnotify'
+  'at-spi2-core'
+  'libsecret'
+  'xdg-utils'            # 用于「用浏览器打开」和打开文件管理器
+  'hicolor-icon-theme'   # 图标主题，缺了菜单里不显示图标
+)
+provides=('hypernote')
+conflicts=('hypernote')
+options=(
+  '!strip'               # 剥符号会破坏 Electron 二进制
+  '!debug'               # Electron 的调试符号有几个 GB
+)
+
+# 直接复用 electron-builder 打好的 deb —— 它的文件布局本来就是对的
+# （/opt/Hypernote/ + .desktop + hicolor 图标），搬过来即可。
+_pkgname=Hypernote
+source=(
+  "${pkgname}-${pkgver}.deb::${url}/releases/download/v${pkgver}/${_pkgname}-${pkgver}-amd64.deb"
+  # LICENSE 随 PKGBUILD 一起放在 AUR 仓库里，不从网上拉
+  'LICENSE'
+)
+sha256sums=(
+  '6f386d692397531ef46890cef0030ef189407f228ed046a49a178dd401a3e681'
+  '080e474517e1d125b003be32c21fac5419b77727c849d4590ddef0b4abf5d7d5'
+)
+
+package() {
+  # .deb 是 ar 归档，里面是 control.tar.* 和 data.tar.*
+  bsdtar -xf "${pkgname}-${pkgver}.deb" -C "$srcdir"
+  bsdtar -xf "$srcdir"/data.tar.* -C "$pkgdir"
+
+  # Electron 的沙箱辅助程序。这里保持 755 不设 setuid：
+  # Chromium 优先走非特权 user namespace，Arch 默认开启；
+  # 设成 4755 会引入一个 setuid root 二进制，没必要。
+  chmod 755 "$pkgdir/opt/Hypernote/chrome-sandbox"
+
+  # MIT 的完整文本要单独装，deb 里只有 electron/chromium 的许可文件
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/${pkgname}/LICENSE"
+}

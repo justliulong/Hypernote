@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self' data: blob:;
+    script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:;
+    style-src 'self' 'unsafe-inline' data:;
+    img-src 'self' data: blob: file: https: http:;
+    font-src 'self' data:;
+    worker-src 'self' data: blob:;
+    frame-src notes: data: blob:;
+    connect-src 'self' data: blob: notes: https: http:;
+  ">
+  <title>Hypernote</title>
+  <link rel="stylesheet" href="css/theme.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-mode="split" data-split="right">
+
+  <div class="app">
+
+    <!-- ═══ 顶部 ═══ -->
+    <header class="titlebar">
+      <div class="tb-left">
+        <button class="icon-btn" id="btn-app-menu" title="菜单" aria-label="菜单">
+          <span data-icon="menu"></span>
+        </button>
+        <div class="brand">
+          <span class="brand-mark">H</span>
+        </div>
+        <div class="vault-chip" title="当前笔记文件夹">
+          <span id="vault-name" class="vault-name hidden"></span>
+          <span id="vault-empty" class="vault-none">未打开文件夹</span>
+        </div>
+        <button class="icon-btn" id="btn-open-vault" title="打开笔记文件夹 (Ctrl+O)">
+          <span data-icon="folder"></span>
+        </button>
+      </div>
+
+      <div class="tb-center">
+        <div class="search-wrap hidden" id="search-wrap">
+          <span data-icon="search"></span>
+          <input type="text" id="search-input" class="search-input"
+                 placeholder="在所有笔记中搜索…" autocomplete="off" spellcheck="false">
+          <span class="search-count" id="search-count"></span>
+          <button class="search-case" id="search-case" title="区分大小写：关">Aa</button>
+          <button class="icon-btn" id="search-close" title="关闭 (Esc)">
+            <span data-icon="x" data-icon-class="icon icon-sm"></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="tb-right">
+        <button class="icon-btn" id="btn-search" title="查找全部 (Ctrl+Shift+F)">
+          <span data-icon="search"></span>
+        </button>
+
+        <!-- 布局模式：编辑 / 分屏 / 预览 -->
+        <div class="segmented" id="layout-switch" role="group" aria-label="布局模式">
+          <button class="icon-btn" id="layout-btn-edit" data-mode="edit" title="仅编辑 — 编辑器占满整个界面">
+            <span data-icon="code"></span>
+          </button>
+          <button class="icon-btn" id="layout-btn-split" data-mode="split" title="分屏 — 编辑与预览并排（双击切换上下分屏）">
+            <span data-icon="columns"></span>
+          </button>
+          <button class="icon-btn" id="layout-btn-preview" data-mode="preview" title="仅预览 — 预览占满整个界面">
+            <span data-icon="eye"></span>
+          </button>
+        </div>
+
+        <button class="icon-btn" id="btn-split-dir" title="分屏方向">
+          <span data-icon="split-bottom"></span>
+        </button>
+        <button class="icon-btn" id="btn-theme" title="切换主题">
+          <span data-icon="moon"></span>
+        </button>
+        <button class="icon-btn" id="btn-sidebar-toggle" title="显示/隐藏侧边栏 (Ctrl+B)">
+          <span data-icon="panel-left"></span>
+        </button>
+      </div>
+    </header>
+
+    <!-- ═══ 主体 ═══ -->
+    <div class="body">
+
+      <!-- 侧边栏 -->
+      <aside class="sidebar" id="sidebar">
+        <!-- 文件树标题栏 -->
+        <div class="sidebar-head" id="tree-head">
+          <span class="title">文件列表</span>
+          <button class="icon-btn" id="btn-new-note" title="新建笔记 (Ctrl+N)">
+            <span data-icon="file-plus"></span>
+          </button>
+          <button class="icon-btn" id="btn-new-folder" title="新建文件夹 (Ctrl+Shift+N)">
+            <span data-icon="folder-plus"></span>
+          </button>
+          <button class="icon-btn" id="btn-collapse-all" title="全部展开 / 折叠">
+            <span data-icon="chevrons-up-down"></span>
+          </button>
+          <button class="icon-btn" id="btn-refresh" title="刷新 (F5)">
+            <span data-icon="refresh"></span>
+          </button>
+        </div>
+
+        <!-- 搜索结果标题栏 -->
+        <div class="sidebar-head hidden" id="search-head">
+          <span class="title">搜索结果</span>
+          <button class="icon-btn" id="btn-collapse-search" title="返回文件列表">
+            <span data-icon="x"></span>
+          </button>
+        </div>
+
+        <div class="sidebar-scroll" id="sidebar-scroll">
+          <div class="file-tree" id="file-tree"></div>
+          <div class="search-results hidden" id="search-results">
+            <div id="search-results-list"></div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="resizer resizer-v" id="resizer-sidebar"></div>
+
+      <!-- 工作区 -->
+      <main class="workspace" id="workspace">
+        <div class="tabs" id="tabs" role="tablist"></div>
+
+        <div class="panes" id="panes">
+
+          <!-- 编辑器 -->
+          <section class="pane pane-editor" id="pane-editor">
+            <div class="editor-host" id="editor-host"></div>
+
+            <div class="welcome" id="welcome">
+              <div class="welcome-inner">
+                <div class="welcome-mark">H</div>
+                <h1>Hypernote</h1>
+                <p class="sub" id="welcome-vault-name"></p>
+                <div class="welcome-grid">
+                  <div class="welcome-card">
+                    <span data-icon="folder"></span>
+                    <div><b>基于文件夹</b><span>笔记就是你磁盘上的 .html 文件</span></div>
+                  </div>
+                  <div class="welcome-card">
+                    <span data-icon="code"></span>
+                    <div><b>完整能力</b><span>图表、动画、任何前端库都能用</span></div>
+                  </div>
+                  <div class="welcome-card">
+                    <span data-icon="eye"></span>
+                    <div><b>实时预览</b><span>边写边看，无需保存</span></div>
+                  </div>
+                  <div class="welcome-card">
+                    <span data-icon="search"></span>
+                    <div><b>全文搜索</b><span>跨所有笔记查找内容</span></div>
+                  </div>
+                </div>
+                <button class="btn btn-primary btn-lg" id="btn-open-vault-welcome">
+                  <span data-icon="folder"></span>
+                  <span>打开笔记文件夹</span>
+                </button>
+                <p class="welcome-hint">或按 Ctrl+O · 按 Ctrl+P 打开命令面板</p>
+              </div>
+            </div>
+          </section>
+
+          <div class="resizer" id="resizer-split"></div>
+
+          <!-- 预览 -->
+          <section class="pane pane-preview" id="pane-preview">
+            <div class="preview-bar">
+              <div class="preview-label">
+                <span data-icon="eye" data-icon-class="icon icon-sm"></span>
+                <span class="name" id="preview-name">未选择笔记</span>
+                <span class="dir" id="preview-dir"></span>
+              </div>
+              <div class="preview-actions">
+                <button class="icon-btn" id="btn-preview-refresh" title="刷新预览">
+                  <span data-icon="refresh"></span>
+                </button>
+                <button class="icon-btn" id="btn-preview-detach" title="在独立窗口打开预览">
+                  <span data-icon="maximize"></span>
+                </button>
+                <button class="icon-btn" id="btn-preview-external" title="在系统浏览器中打开">
+                  <span data-icon="external-link"></span>
+                </button>
+              </div>
+            </div>
+            <div class="preview-body">
+              <iframe id="preview-frame" class="preview-frame" title="笔记预览"></iframe>
+              <div class="preview-empty" id="preview-empty">
+                <div class="empty">
+                  <span data-icon="eye" data-icon-class="icon icon-lg"></span>
+                  <p>打开一篇笔记即可看到预览</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </main>
+    </div>
+
+    <!-- ═══ 状态栏 ═══ -->
+    <footer class="statusbar">
+      <div class="status-item" id="status-vault" title="">
+        <span data-icon="folder" data-icon-class="icon icon-sm"></span>
+        <span class="text path"></span>
+      </div>
+      <div class="status-item grow">
+        <span id="status-file" class="path"></span>
+      </div>
+      <div class="status-item" id="status-message"></div>
+      <div class="status-item">
+        <span id="status-lang"></span>
+      </div>
+      <div class="status-item">
+        <span id="status-cursor"></span>
+      </div>
+      <div class="status-item">
+        <span class="status-pill saved" id="status-saved">
+          <span class="dot"></span>
+          <span class="text">已保存</span>
+        </span>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ═══ Monaco 加载器 ═══ -->
+  <script>
+    // Monaco 的 worker 需要用 data: URL 引导，把 baseUrl 和 workerMain 传进去。
+    // baseUrl 必须是 min/（不是 min/vs）—— worker 内部会自己拼上 vs/ 前缀。
+    (function () {
+      const api = window.notesAPI;
+      window.MonacoEnvironment = {
+        getWorkerUrl: function () {
+          const bootstrap = [
+            `self.MonacoEnvironment = { baseUrl: ${JSON.stringify(api.monacoRoot + '/')} };`,
+            `importScripts(${JSON.stringify(api.monacoWorker)});`,
+          ].join('\n');
+          return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(bootstrap);
+        },
+      };
+    })();
+  </script>
+  <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
+
+  <!-- ═══ 应用脚本 ═══ -->
+  <script src="js/util.js"></script>
+  <script src="js/icons.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/editor.js"></script>
+  <script src="js/preview.js"></script>
+  <script src="js/fileTree.js"></script>
+  <script src="js/search.js"></script>
+  <script src="js/tabs.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>
