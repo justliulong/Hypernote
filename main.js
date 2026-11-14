@@ -9,6 +9,7 @@ const { app, BrowserWindow, ipcMain, dialog, Menu, shell, protocol, session, net
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
+const { annotateHtml } = require('./src/source-map');
 
 // ─── 全局状态 ───────────────────────────────────────────
 let mainWindow = null;
@@ -91,24 +92,235 @@ const MIME = {
 const mimeOf = (p) => MIME[path.extname(p).toLowerCase()] || 'application/octet-stream';
 
 // 注入预览专用的辅助脚本（只影响预览流，不写回磁盘）
+// 三件事：滚动位置恢复、源码行号 ↔ 滚动位置换算、点击元素反查源码行号。
 const PREVIEW_HELPER = `
+<style data-notes-injected>
+  [data-notes-hover] { outline: 2px solid #89b4fa !important; outline-offset: -1px !important; }
+  [data-notes-flash] { outline: 2px solid #f9e2af !important; outline-offset: 2px !important; }
+  html[data-notes-jump], html[data-notes-jump] * { cursor: crosshair !important; }
+</style>
 <script data-notes-injected>
 (function () {
-  // 1. 刷新后恢复滚动位置（sessionStorage 跨 reload 保留）
+  var SRC = 'data-notes-line';
+  var END = 'data-notes-end';
+  var parentWin = window.parent;
+  var embedded = !!parentWin && parentWin !== window;
+
+  function post(msg) {
+    if (!embedded) return;
+    msg.__notes = true;
+    try { parentWin.postMessage(msg, '*'); } catch (e) {}
+  }
+
+  /* ── 1. 刷新后恢复滚动位置（sessionStorage 跨 reload 保留） ── */
   var KEY = 'notes:scroll:' + location.pathname;
   try {
     var saved = sessionStorage.getItem(KEY);
     if (saved) requestAnimationFrame(function () { window.scrollTo(0, parseInt(saved, 10) || 0); });
   } catch (e) {}
-  var t;
+
+  /* ── 2. 源码行号 ↔ 滚动位置 ─────────────────────── */
+  // 用注入了 data-notes-line 的元素当锚点，在相邻锚点之间线性插值，
+  // 这样源码和预览长度不一致时也能平滑对应。
+  var anchors = [];
+  var anchorsAt = 0;
+  var suppressUntil = 0;
+  var lastReport = 0;
+  var lastLine = -1;
+  var reportTimer = null;
+
+  function buildAnchors() {
+    anchors = [];
+    var nodes = document.querySelectorAll('[' + SRC + ']');
+    var prevLine = -1;
+    var prevY = -Infinity;
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var line = parseInt(node.getAttribute(SRC), 10);
+      if (!line || line <= prevLine) continue;
+      if (!node.getClientRects().length) continue;      // 隐藏元素不参与
+      var y = node.getBoundingClientRect().top + (window.scrollY || window.pageYOffset || 0);
+      if (y < prevY - 1) continue;                      // 绝对定位等导致顺序错乱的跳过
+      anchors.push({ line: line, y: y });
+      prevLine = line;
+      prevY = y;
+    }
+    anchorsAt = Date.now();
+  }
+
+  function anchorList() {
+    if (!anchors.length || Date.now() - anchorsAt > 1500) buildAnchors();
+    return anchors;
+  }
+
+  // 二分：最后一个 list[i][key] <= value 的下标
+  function lastBelow(list, key, value) {
+    var lo = 0;
+    var hi = list.length - 1;
+    var hit = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (list[mid][key] <= value) { hit = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return hit;
+  }
+
+  function lineToY(line) {
+    var list = anchorList();
+    if (!list.length) return 0;
+    var idx = lastBelow(list, 'line', line);
+    if (idx < 0) return 0;
+    var a = list[idx];
+    var b = list[idx + 1];
+    if (!b || b.y <= a.y || b.line <= a.line) return a.y;
+    var t = (line - a.line) / (b.line - a.line);
+    return a.y + t * (b.y - a.y);
+  }
+
+  function yToLine(y) {
+    var list = anchorList();
+    if (!list.length) return 0;
+    var idx = lastBelow(list, 'y', y);
+    if (idx < 0) return list[0].line;
+    var a = list[idx];
+    var b = list[idx + 1];
+    if (!b || b.y <= a.y || b.line <= a.line) return a.line;
+    var t = (y - a.y) / (b.y - a.y);
+    return a.line + t * (b.line - a.line);
+  }
+
+  function reportScroll() {
+    if (!embedded || Date.now() < suppressUntil) return;
+    var line = Math.round(yToLine(window.scrollY));
+    if (!line || line === lastLine) return;
+    lastLine = line;
+    lastReport = Date.now();
+    post({ type: 'scroll', line: line });
+  }
+
+  function scheduleReport() {
+    if (!embedded) return;
+    // 滚动过程中跟手同步，停下来再补一次最终位置
+    if (Date.now() - lastReport > 80) reportScroll();
+    clearTimeout(reportTimer);
+    reportTimer = setTimeout(reportScroll, 140);
+  }
+
+  function syncToLine(line) {
+    if (!line) return;
+    suppressUntil = Date.now() + 200;
+    window.scrollTo(0, Math.max(0, Math.round(lineToY(line))));
+  }
+
+  var saveTimer = null;
+  var rafPending = false;
   window.addEventListener('scroll', function () {
-    clearTimeout(t);
-    t = setTimeout(function () {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
       try { sessionStorage.setItem(KEY, String(window.scrollY)); } catch (e) {}
-    }, 120);
+    }, 150);
+    if (!rafPending) {
+      rafPending = true;
+      requestAnimationFrame(function () { rafPending = false; scheduleReport(); });
+    }
   }, { passive: true });
 
-  // 2. 链接行为：外链走系统浏览器，库内 .html 交给宿主打开成标签页
+  /* ── 3. 点击元素 → 源码行号 ─────────────────────── */
+  var jumpMode = false;
+  var hovered = null;
+  var hoverPending = false;
+
+  function sourceNode(start) {
+    var node = start;
+    while (node && node.nodeType !== 1) node = node.parentNode;
+    while (node) {
+      // html / body 代表整页，点空白处不该跳到它们
+      if (node !== document.body && node !== document.documentElement &&
+          node.getAttribute && node.getAttribute(SRC)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function setHover(node) {
+    if (hovered === node) return;
+    if (hovered) hovered.removeAttribute('data-notes-hover');
+    hovered = node;
+    if (node) node.setAttribute('data-notes-hover', '');
+  }
+
+  function exitJumpMode() {
+    jumpMode = false;
+    document.documentElement.removeAttribute('data-notes-jump');
+    setHover(null);
+  }
+
+  // 必须先于链接处理器注册：Ctrl+点击命中元素时用 stopImmediatePropagation 拦住链接行为
+  document.addEventListener('click', function (ev) {
+    if (!jumpMode && !ev.ctrlKey && !ev.metaKey) return;
+    var node = sourceNode(ev.target);
+    if (!node) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    post({
+      type: 'jump-source',
+      line: parseInt(node.getAttribute(SRC), 10) || 1,
+      end: parseInt(node.getAttribute(END), 10) || 0,
+      tag: (node.tagName || '').toLowerCase(),
+      href: location.href,
+    });
+    if (jumpMode) exitJumpMode();
+  }, true);
+
+  document.addEventListener('mousemove', function (ev) {
+    if (!jumpMode || hoverPending) return;
+    hoverPending = true;
+    requestAnimationFrame(function () {
+      hoverPending = false;
+      setHover(sourceNode(ev.target));
+    });
+  }, true);
+
+  // Esc 退出定位模式（预览文档里按的 Esc 宿主窗口收不到，这里转告它）
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape' || !jumpMode) return;
+    exitJumpMode();
+    post({ type: 'jump-mode', on: false });
+  }, true);
+
+  /* ── 4. 宿主 → 预览：模式 / 同步滚动 / 高亮 ───────── */
+  function flashLine(line) {
+    if (!line) return;
+    var nodes = document.querySelectorAll('[' + SRC + ']');
+    var target = null;
+    for (var i = 0; i < nodes.length; i++) {
+      var l = parseInt(nodes[i].getAttribute(SRC), 10);
+      if (l === line) { target = nodes[i]; break; }
+      if (l > line) break;
+      target = nodes[i];
+    }
+    if (!target) return;
+    target.setAttribute('data-notes-flash', '');
+    setTimeout(function () { target.removeAttribute('data-notes-flash'); }, 1600);
+  }
+
+  window.addEventListener('message', function (ev) {
+    var data = ev.data;
+    if (!data || data.__notes !== true) return;
+    if (ev.source !== parentWin) return;
+
+    if (data.type === 'jump-mode') {
+      jumpMode = !!data.on;
+      if (jumpMode) document.documentElement.setAttribute('data-notes-jump', '');
+      else exitJumpMode();
+    } else if (data.type === 'sync-scroll') {
+      syncToLine(data.line);
+    } else if (data.type === 'flash-source') {
+      flashLine(data.line);
+    }
+  });
+
+  /* ── 5. 链接行为：外链走系统浏览器，库内 .html 交给宿主打开成标签页 ── */
   document.addEventListener('click', function (ev) {
     var el = ev.target;
     while (el && el.tagName !== 'A') el = el.parentElement;
@@ -125,15 +337,15 @@ const PREVIEW_HELPER = `
     }
     if (/\\.html?($|[?#])/i.test(href)) {
       ev.preventDefault();
-      try { parent.postMessage({ __notes: true, type: 'open-note', href: el.href }, '*'); } catch (e) {}
+      post({ type: 'open-note', href: el.href });
     }
   }, true);
 
-  // 3. 把内容高度报给宿主，便于自适应
+  /* ── 6. 把内容高度报给宿主，便于自适应 ────────────── */
   try {
     if (window.ResizeObserver) {
       new ResizeObserver(function () {
-        try { parent.postMessage({ __notes: true, type: 'resize', height: document.documentElement.scrollHeight }, '*'); } catch (e) {}
+        post({ type: 'resize', height: document.documentElement.scrollHeight });
       }).observe(document.documentElement);
     }
   } catch (e) {}
@@ -172,7 +384,8 @@ function registerProtocol() {
     // 正在预览的文件 → 返回内存中的实时缓冲（含未保存修改）
     if (state.liveFile && hit.rel === state.liveFile && state.liveContent !== null) {
       const isHtml = /\.html?$/i.test(hit.rel);
-      const body = isHtml ? injectHelper(state.liveContent) : state.liveContent;
+      // 注入 data-notes-line 属性，让预览里的元素能反查到源码行号
+      const body = isHtml ? injectHelper(annotateHtml(state.liveContent)) : state.liveContent;
       return new Response(body, {
         headers: { 'Content-Type': mimeOf(hit.rel), 'Cache-Control': 'no-store' },
       });
@@ -183,7 +396,7 @@ function registerProtocol() {
       const isHtml = /\.html?$/i.test(hit.rel);
       if (isHtml) {
         const text = await fsp.readFile(hit.abs, 'utf-8');
-        return new Response(injectHelper(text), {
+        return new Response(injectHelper(annotateHtml(text)), {
           headers: { 'Content-Type': mimeOf(hit.rel), 'Cache-Control': 'no-store' },
         });
       }
@@ -709,6 +922,15 @@ handle('preview:window-is-open', async () => ({
   success: true,
   open: !!previewWindow && !previewWindow.isDestroyed(),
 }));
+
+// 独立预览窗口里点了元素 → 转给主窗口去定位源码
+handle('preview:jump-source', async (payload) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app:jump-source', payload || {});
+    mainWindow.focus();
+  }
+  return { success: true };
+});
 
 // — 偏好设置 —
 handle('prefs:get', async () => ({ success: true, prefs }));

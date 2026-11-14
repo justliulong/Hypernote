@@ -93,6 +93,11 @@ const Editor = {
       Status.setCursor(pos.lineNumber, pos.column, this.instance.getModel()?.getLineCount() || 0);
     });
 
+    // 编辑器滚动 → 预览跟随（见 preview.js）
+    this.instance.onDidScrollChange(() => {
+      if (typeof Preview !== 'undefined') Preview.onEditorScroll();
+    });
+
     this.instance.onDidChangeModel(() => {
       const model = this.instance.getModel();
       App.onModelChanged(model);
@@ -364,19 +369,50 @@ const Editor = {
     this.instance?.updateOptions(opts);
   },
 
-  revealLine(line, endLine) {
-    if (!this.ready) return;
-    this.instance.revealLineInCenter(line);
-    this.instance.setPosition({ lineNumber: line, column: 1 });
-    this.instance.focus();
-    if (endLine) {
-      this.instance.setSelection(new monaco.Range(line, 1, endLine, 1));
-    }
-    // 短暂高亮，帮用户定位
+  /** 当前视口最上面一行的行号（滚动同步用） */
+  getTopVisibleLine() {
+    if (!this.ready || !this.instance) return 0;
+    const ranges = this.instance.getVisibleRanges();
+    return ranges.length ? ranges[0].startLineNumber : 0;
+  },
+
+  /** 把某一行滚到视口顶部，不动光标（滚动同步用） */
+  scrollToSourceLine(line) {
+    if (!this.ready || !this.instance || !line) return;
     const model = this.instance.getModel();
     if (!model) return;
+    const target = Math.max(1, Math.min(Math.round(line), model.getLineCount()));
+    this.instance.setScrollTop(this.instance.getTopForLineNumber(target));
+  },
+
+  /**
+   * 跳到源码行。给了 endLine 时选中整段（预览里点中的元素可能跨多行），
+   * 跨度过大时只定位不选中，免得把整个文件选蓝。
+   */
+  revealLine(line, endLine) {
+    if (!this.ready || !this.instance || !line) return;
+    const model = this.instance.getModel();
+    const count = model ? model.getLineCount() : line;
+    const start = Math.max(1, Math.min(line, count));
+    const end = endLine ? Math.max(start, Math.min(endLine, count)) : 0;
+
+    this.instance.revealLineInCenter(start);
+    this.instance.setPosition({ lineNumber: start, column: 1 });
+    this.instance.focus();
+
+    if (end) {
+      const stopLine = Math.max(start, end);
+      // 跨度过大时只定位不选中，免得把整个文件选蓝
+      if (stopLine - start <= 400) {
+        const lastCol = model ? model.getLineMaxColumn(stopLine) : 1;
+        this.instance.setSelection(new monaco.Range(start, 1, stopLine, lastCol));
+      }
+    }
+
+    // 短暂高亮，帮用户定位
+    if (!model) return;
     const decorations = this.instance.deltaDecorations([], [{
-      range: new monaco.Range(line, 1, line, Math.max(2, model.getLineMaxColumn(line))),
+      range: new monaco.Range(start, 1, start, Math.max(2, model.getLineMaxColumn(start))),
       options: { isWholeLine: true, className: 'line-flash' },
     }]);
     setTimeout(() => this.instance?.deltaDecorations(decorations, []), 1200);

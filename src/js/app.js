@@ -17,6 +17,7 @@ const App = {
     minimap: false,
     livePreview: true,
     autoSave: false,
+    syncScroll: true,
     sidebarWidth: 262,
     splitRatio: 0.5,
   },
@@ -42,6 +43,7 @@ const App = {
         minimap: p.minimap ?? this.prefs.minimap,
         livePreview: p.livePreview ?? this.prefs.livePreview,
         autoSave: p.autoSave ?? this.prefs.autoSave,
+        syncScroll: p.syncScroll ?? this.prefs.syncScroll,
         sidebarWidth: p.sidebarWidth || this.prefs.sidebarWidth,
         splitRatio: p.splitRatio || this.prefs.splitRatio,
       });
@@ -111,6 +113,7 @@ const App = {
     $$('#layout-switch .icon-btn').forEach((b) => b.classList.toggle('active', b.dataset.mode === this.mode));
     this.applyPaneSizes();
     Editor.layout();
+    Preview.onLayoutChanged?.();
   },
 
   setMode(mode) {
@@ -822,6 +825,8 @@ const App = {
           (v) => Editor.updateOptions({ minimap: { enabled: v } })),
         mkSwitch('livePreview', '实时预览', '编辑时自动刷新预览（关闭后需手动刷新或保存）',
           (v) => { if (v && Preview.target) Preview.update(); }),
+        mkSwitch('syncScroll', '滚动同步', '分屏时编辑器和预览一起滚动',
+          (v) => { Preview.syncScroll = v; Preview.updateControls(); }),
         mkSwitch('autoSave', '自动保存', '停止输入 1.5 秒后自动写入磁盘'),
       ]),
       footer: [
@@ -830,11 +835,13 @@ const App = {
           onclick: async () => {
             Object.assign(this.prefs, {
               fontSize: 13.5, tabSize: 2, wordWrap: false, minimap: false,
-              livePreview: true, autoSave: false,
+              livePreview: true, autoSave: false, syncScroll: true,
             });
-            for (const k of ['fontSize', 'tabSize', 'wordWrap', 'minimap', 'livePreview', 'autoSave']) {
+            for (const k of ['fontSize', 'tabSize', 'wordWrap', 'minimap', 'livePreview', 'autoSave', 'syncScroll']) {
               await window.notesAPI.setPref(k, this.prefs[k]);
             }
+            Preview.syncScroll = true;
+            Preview.updateControls();
             Editor.updateOptions({
               fontSize: 13.5, tabSize: 2, wordWrap: 'off', minimap: { enabled: false },
             });
@@ -861,6 +868,7 @@ const App = {
       ['切换布局', 'Ctrl+E'],
       ['侧边栏开关', 'Ctrl+B'],
       ['格式化文档', 'Alt+Shift+F'],
+      ['跳到预览元素的源码', 'Ctrl+点击预览'],
       ['重命名（文件树上）', 'F2'],
       ['删除（文件树上）', 'Delete'],
       ['刷新', 'F5'],
@@ -897,6 +905,12 @@ const App = {
       { label: '布局：仅预览', icon: 'eye', run: () => this.setMode('preview') },
       { label: '预览：弹出到独立窗口', icon: 'maximize', disabled: !hasFile, run: () => Preview.toggleDetachWindow() },
       { label: '预览：刷新', icon: 'refresh', disabled: !hasFile, run: () => Preview.refresh(true) },
+      { label: '预览：定位元素（点预览跳源码）', icon: 'crosshair', disabled: !hasFile, run: () => Preview.setJumpMode(true) },
+      {
+        label: `预览：滚动同步（当前${this.prefs.syncScroll ? '开' : '关'}）`,
+        icon: 'link',
+        run: () => Preview.toggleSyncScroll(),
+      },
       { separator: true },
       { label: '文件树：全部展开', icon: 'chevrons-up-down', disabled: !hasVault, run: () => FileTree.expandAll() },
       { label: '文件树：全部折叠', icon: 'chevrons-up-down', disabled: !hasVault, run: () => FileTree.collapseAll() },
@@ -969,6 +983,7 @@ const App = {
     });
     window.notesAPI.onFsChanged((info) => this.onFsChanged(info));
     window.notesAPI.onBeforeClose(() => this.handleBeforeClose());
+    window.notesAPI.onJumpSource((data) => Preview.handleJump(data));
     window.notesAPI.onPrefsChanged((p) => {
       if (!p) return;
       if (p.theme && p.theme !== Theme.mode) Theme.set(p.theme);

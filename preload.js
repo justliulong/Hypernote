@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('notesAPI', {
   reloadPreviewWindow: invoke('preview:reload-window'),
   isPreviewWindowOpen: invoke('preview:window-is-open'),
   requestPreviewTarget: invoke('preview:request-target'),
+  jumpFromPreview: invoke('preview:jump-source'),
 
   // ── 设置 / 应用 ──
   getPrefs: invoke('prefs:get'),
@@ -86,4 +87,5 @@ contextBridge.exposeInMainWorld('notesAPI', {
   onPreviewTarget: (cb) => on('preview:target', cb),
   onPreviewReload: (cb) => on('preview:reload', cb),
   onPreviewWindowClosed: (cb) => on('preview:window-closed', cb),
+  onJumpSource: (cb) => on('app:jump-source', cb),
 });

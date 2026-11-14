@@ -83,6 +83,12 @@
     const data = event.data;
     if (!data || data.__notes !== true) return;
 
+    if (data.type === 'jump-source') {
+      // 独立窗口里点元素 → 让主窗口跳到对应源码
+      api.jumpFromPreview(data);
+      return;
+    }
+
     if (data.type === 'open-note') {
       // 独立窗口里点内部链接：直接在本窗口切换目标
       const prefix = `${api.previewOrigin}/`;

@@ -19,6 +19,15 @@ const Preview = {
   _seq: 0,
   _debounced: null,
 
+  /* 编辑 ↔ 预览联动 */
+  syncScroll: true,
+  jumpMode: false,
+  _frameReady: false,
+  _remoteScrollUntil: 0,
+  _lastSyncAt: 0,
+  _lastSyncLine: 0,
+  _hintShown: false,
+
   init() {
     this.frame = $('#preview-frame');
     this.emptyNode = $('#preview-empty');
@@ -27,12 +36,20 @@ const Preview = {
 
     this._debounced = debounce(() => this.update(), 450);
 
-    // 接收预览内容的 postMessage（链接跳转 / 高度上报）
+    // 接收预览内容的 postMessage（链接跳转 / 高度上报 / 定位 / 滚动）
     window.addEventListener('message', (e) => this.onMessage(e));
+
+    // 实时预览会频繁重载 iframe，每次加载完成都要重新和预览页握手
+    this.frame?.addEventListener('load', () => this.onFrameLoad());
 
     $('#btn-preview-refresh')?.addEventListener('click', () => this.refresh(true));
     $('#btn-preview-detach')?.addEventListener('click', () => this.toggleDetachWindow());
     $('#btn-preview-external')?.addEventListener('click', () => this.openExternal());
+    $('#btn-preview-sync')?.addEventListener('click', () => this.toggleSyncScroll());
+    $('#btn-preview-jump')?.addEventListener('click', () => this.setJumpMode(!this.jumpMode));
+
+    this.syncScroll = App.prefs.syncScroll !== false;
+    this.updateControls();
 
     window.notesAPI.onPreviewWindowClosed(() => this.updateDetachButton());
   },
@@ -62,6 +79,9 @@ const Preview = {
   clear() {
     this.target = null;
     this._seq++;
+    this._frameReady = false;
+    this.jumpMode = false;
+    this.updateControls();
     if (this.frame) {
       this.frame.removeAttribute('src');
       this.frame.classList.add('hidden');
@@ -180,10 +200,143 @@ const Preview = {
 
   reload() {
     if (!this.target || !this.frame) return;
+    this._frameReady = false;
     // 带递增参数强制重新导航（协议层已设 no-store）
     this.frame.src = `${PathUtil.toPreviewUrl(this.target)}?v=${++this._seq}`;
     this.frame.classList.remove('hidden');
     this.emptyNode?.classList.add('hidden');
+  },
+
+  /* ═══ 编辑 ↔ 预览联动 ══════════════════════════════════ */
+
+  /** 只有在分屏、有预览目标、同步开启且 iframe 已就绪时才联动 */
+  _linked() {
+    return this.syncScroll && !!this.target && App.mode === 'split' && this._frameReady;
+  },
+
+  postToFrame(msg) {
+    const win = this._frameReady ? this.frame?.contentWindow : null;
+    if (!win) return;
+    try {
+      win.postMessage({ __notes: true, ...msg }, '*');
+    } catch { /* iframe 正在导航，忽略 */ }
+  },
+
+  /** iframe 每次加载完成后重新握手：恢复定位模式、对齐滚动位置 */
+  onFrameLoad() {
+    if (!this.target) return;
+    this._frameReady = true;
+    this.postToFrame({ type: 'jump-mode', on: this.jumpMode });
+    if (this._linked()) {
+      const line = Editor.getTopVisibleLine();
+      if (line) this.postToFrame({ type: 'sync-scroll', line });
+    }
+    this.maybeShowHint();
+  },
+
+  /** 首次进入分屏时提示一次「Ctrl+点击可定位」 */
+  maybeShowHint() {
+    if (this._hintShown || App.mode !== 'split') return;
+    try {
+      if (localStorage.getItem('notes.hint.jump')) return;
+      localStorage.setItem('notes.hint.jump', '1');
+    } catch { return; }
+    this._hintShown = true;
+    setTimeout(() => {
+      Toast.info('按住 Ctrl 点击预览里的元素，可直接跳到对应源码', {
+        timeout: 9000,
+        action: { label: '试试定位', onClick: () => this.setJumpMode(true) },
+      });
+    }, 1500);
+  },
+
+  updateControls() {
+    const syncBtn = $('#btn-preview-sync');
+    syncBtn?.classList.toggle('active', this.syncScroll);
+    if (syncBtn) syncBtn.title = this.syncScroll ? '滚动同步：开' : '滚动同步：关';
+
+    const jumpBtn = $('#btn-preview-jump');
+    jumpBtn?.classList.toggle('active', this.jumpMode);
+    if (jumpBtn) {
+      jumpBtn.title = this.jumpMode
+        ? '定位模式：点击预览元素跳到源码（Esc 退出）'
+        : '定位模式：点击后点预览里的元素可跳到对应源码（也可直接 Ctrl+点击）';
+    }
+  },
+
+  toggleSyncScroll() {
+    this.syncScroll = !this.syncScroll;
+    App.prefs.syncScroll = this.syncScroll;
+    window.notesAPI.setPref('syncScroll', this.syncScroll);
+    this.updateControls();
+    Toast.info(this.syncScroll ? '滚动同步：开' : '滚动同步：关', { timeout: 1400 });
+    if (this._linked()) {
+      const line = Editor.getTopVisibleLine();
+      if (line) this.postToFrame({ type: 'sync-scroll', line });
+    }
+  },
+
+  setJumpMode(on) {
+    this.jumpMode = !!on;
+    this.updateControls();
+    this.postToFrame({ type: 'jump-mode', on: this.jumpMode });
+    if (this.jumpMode) {
+      Status.setMessage('定位模式：点击预览里的元素，Esc 退出');
+      Toast.info('点击预览里的任意元素，即可跳到对应源码', { timeout: 3000 });
+    } else {
+      Status.setMessage('');
+    }
+  },
+
+  /** 编辑器滚动 → 预览跟随 */
+  onEditorScroll() {
+    if (!this._linked() || Date.now() < this._remoteScrollUntil) return;
+    const line = Editor.getTopVisibleLine();
+    if (!line) return;
+    const now = Date.now();
+    if (now - this._lastSyncAt < 50 || line === this._lastSyncLine) return;
+    this._lastSyncAt = now;
+    this._lastSyncLine = line;
+    this.postToFrame({ type: 'sync-scroll', line });
+  },
+
+  /** 预览滚动 → 编辑器跟随 */
+  syncEditorFromPreview(line) {
+    if (!this._linked() || !line) return;
+    this._remoteScrollUntil = Date.now() + 250;
+    this._lastSyncLine = line;
+    Editor.scrollToSourceLine(line);
+  },
+
+  /** 切换布局 / 模式后重新对齐一次 */
+  onLayoutChanged() {
+    if (App.mode === 'split') this.maybeShowHint();
+    if (!this._linked()) return;
+    const line = Editor.getTopVisibleLine();
+    if (line) this.postToFrame({ type: 'sync-scroll', line });
+  },
+
+  /** 预览里点了元素 → 跳到对应源码 */
+  handleJump(data) {
+    if (!data) return;
+    const line = Number(data.line) || 1;
+    const end = Number(data.end) || 0;
+    const rel = data.href ? PathUtil.fromPreviewUrl(data.href) : null;
+    const active = Tabs.activePath;
+
+    if (rel && rel !== active) {
+      // 预览里已经导航到子页面（或来自独立预览窗口）：先在编辑器里打开它
+      if (!App.findInTree(rel)) { Toast.warn(`笔记库中找不到 ${rel}`); return; }
+      if (this.jumpMode) this.setJumpMode(false);
+      App.openFile(rel, { line, endLine: end || null });
+      return;
+    }
+    if (!active) return;
+
+    if (this.jumpMode) this.setJumpMode(false);
+    Editor.revealLine(line, end || null);
+    this.postToFrame({ type: 'flash-source', line });
+    Status.setMessage(`已定位到第 ${line} 行`);
   },
 
   /* ─── 独立预览窗口 ───────────────────────────────────── */
@@ -237,6 +390,22 @@ const Preview = {
       const exists = App.findInTree(rel);
       if (!exists) { Toast.warn(`笔记库中找不到 ${rel}`); return; }
       App.openFile(rel);
+      return;
+    }
+
+    if (data.type === 'jump-source') {
+      this.handleJump(data);
+      return;
+    }
+
+    if (data.type === 'scroll') {
+      this.syncEditorFromPreview(Number(data.line) || 0);
+      return;
+    }
+
+    if (data.type === 'jump-mode') {
+      // 预览里按 Esc 退出定位模式
+      if (!data.on) this.setJumpMode(false);
       return;
     }
 

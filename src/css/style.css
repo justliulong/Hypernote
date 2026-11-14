@@ -640,6 +640,11 @@ body[data-mode='preview'] .welcome { display: none; }
   background: var(--bg-editor);
 }
 
+/* 预览 → 源码定位时短暂高亮的行（Monaco 装饰类名） */
+.line-flash {
+  background: rgba(249, 226, 175, 0.22) !important;
+}
+
 /* 独立预览窗口专用 */
 .preview-standalone { height: 100vh; display: flex; flex-direction: column; background: var(--bg-app); }
 .preview-standalone .preview-body { flex: 1; }
