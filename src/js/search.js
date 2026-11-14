@@ -76,7 +76,13 @@ const Search = {
     this.countNode.textContent = '搜索中…';
     this.listNode.innerHTML = '';
 
-    const res = await window.notesAPI.search(this.query, { caseSensitive: this.caseSensitive });
+    // 把有未保存改动的标签内容一并带上，搜索也能命中还没写到磁盘的编辑
+    const overrides = {};
+    for (const tab of Tabs.tabs) {
+      if (App.isDirty(tab.path)) overrides[tab.path] = Editor.getValue(tab.path) ?? '';
+    }
+
+    const res = await window.notesAPI.search(this.query, { caseSensitive: this.caseSensitive, overrides });
     if (seq !== this._seq) return;   // 已有更新的查询，丢弃这次结果
 
     if (!res.success) {
@@ -143,7 +149,10 @@ const Search = {
       const snippet = el('div', { class: 'result-snippet' });
       snippet.innerHTML = this.highlight(item.snippet, this.query);
 
-      const open = () => { App.openFile(item.path); this.toggle(false); };
+      const open = () => {
+        App.openFile(item.path, { line: item.line || null });
+        this.toggle(false);
+      };
       fileRow.addEventListener('click', open);
       snippet.addEventListener('click', open);
 

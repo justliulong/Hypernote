@@ -99,6 +99,11 @@
       "executableName": "hypernote",
       "syncDesktopName": true,
       "icon": "build/icons",
+      "desktop": {
+        "entry": {
+          "MimeType": "text/html;"
+        }
+      },
       "synopsis": "Notes in HTML with live preview",
       "description": "Folder-based notes in HTML — write notes that can run code."
     },

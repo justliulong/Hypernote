@@ -41,6 +41,8 @@ const Tabs = {
 
     this.tabs.splice(idx, 1);
     Editor.disposeModel(path);
+    // 关闭后不再需要磁盘基线，下次打开会重新读盘
+    App.savedContent.delete(path);
 
     // 关闭的是当前标签 → 激活邻居
     if (this.activePath === path) {
@@ -94,16 +96,6 @@ const Tabs = {
     const tab = this.container.querySelector(`.tab[data-path="${cssEscape(path)}"]`);
     tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     App.activateFile(path);
-  },
-
-  /** 文件被重命名后同步标签 */
-  rename(oldPath, newPath) {
-    const tab = this.tabs.find((t) => t.path === oldPath);
-    if (!tab) return;
-    tab.path = newPath;
-    tab.name = PathUtil.base(newPath);
-    if (this.activePath === oldPath) this.activePath = newPath;
-    this.render();
   },
 
   markDirty(path) {

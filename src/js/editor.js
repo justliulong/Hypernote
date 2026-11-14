@@ -91,6 +91,8 @@ const Editor = {
     this.instance.onDidChangeCursorPosition((e) => {
       const pos = e.position;
       Status.setCursor(pos.lineNumber, pos.column, this.instance.getModel()?.getLineCount() || 0);
+      // 光标 → 预览里的对应元素描边（见 preview.js）
+      if (typeof Preview !== 'undefined') Preview.onEditorCursor?.(pos.lineNumber);
     });
 
     // 编辑器滚动 → 预览跟随（见 preview.js）
@@ -268,11 +270,26 @@ const Editor = {
     return monaco.Uri.file(`/${rel}`);
   },
 
+  /** 扩展名 → Monaco 语言 id（状态栏、语法高亮保持一致） */
+  languageFor(rel) {
+    const ext = PathUtil.ext(rel);
+    return {
+      html: 'html', htm: 'html',
+      css: 'css',
+      js: 'javascript', mjs: 'javascript',
+      json: 'json',
+      md: 'markdown',
+      svg: 'xml', xml: 'xml',
+      txt: 'plaintext',
+    }[ext] || 'plaintext';
+  },
+
   getModel(rel, content) {
     if (this.models.has(rel)) return this.models.get(rel);
     const uri = this.modelUri(rel);
     // Uri 已被占用（例如同名文件）时复用已有 model，避免 monaco 抛错
-    const model = monaco.editor.getModel(uri) || monaco.editor.createModel(content ?? '', 'html', uri);
+    const model = monaco.editor.getModel(uri)
+      || monaco.editor.createModel(content ?? '', this.languageFor(rel), uri);
     this.models.set(rel, model);
     return model;
   },
@@ -328,6 +345,7 @@ const Editor = {
       this.activePath = null;
     }
     this._viewStates.delete(rel);
+    this._savedVersion.delete(rel);
     this.models.delete(rel);
     model.dispose();
   },

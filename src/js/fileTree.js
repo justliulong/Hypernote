@@ -11,6 +11,8 @@ const FileTree = {
   expanded: new Set(),
   selected: null,
   active: null,
+  _selectedRow: null,
+  _activeRow: null,
   dragging: null,
   renaming: null,
 
@@ -31,11 +33,14 @@ const FileTree = {
     if (!this.tree.length) {
       this.container.innerHTML = '';
       this.container.appendChild(this.emptyState());
+      this._selectedRow = this._activeRow = null;
       return;
     }
 
     this.container.innerHTML = '';
     this.container.appendChild(this.buildRows(this.tree, 0));
+    this._selectedRow = this.selected ? this.rowFor(this.selected) : null;
+    this._activeRow = this.active ? this.rowFor(this.active) : null;
     this.restoreScroll();
   },
 
@@ -116,11 +121,28 @@ const FileTree = {
 
     if (isFolder && node.children?.length) {
       const kids = el('div', { class: 'tree-children' });
+      kids.dataset.level = String(level + 1);
       kids.style.display = open ? 'block' : 'none';
-      kids.appendChild(this.buildRows(node.children, level + 1));
+      if (open) kids.appendChild(this.buildRows(node.children, level + 1));
+      else kids.dataset.lazy = '1';   // 折叠的目录先不建 DOM，展开时再补
       frag.appendChild(kids);
     }
     return frag;
+  },
+
+  /** 懒加载：展开目录时才把子节点建出来（大库首屏快很多） */
+  ensureChildren(row) {
+    const kids = row.nextElementSibling;
+    if (!kids || !kids.classList.contains('tree-children') || !kids.dataset.lazy) return;
+    const node = this.findNode(row.dataset.path);
+    delete kids.dataset.lazy;
+    if (!node?.children?.length) return;
+    kids.appendChild(this.buildRows(node.children, Number(kids.dataset.level) || 0));
+  },
+
+  rowFor(rel) {
+    if (!rel || !this.container) return null;
+    return this.container.querySelector(`.tree-row[data-path="${cssEscape(rel)}"]`);
   },
 
   bindRow(row, node) {
@@ -266,7 +288,9 @@ const FileTree = {
       const open = this.expanded.has(row.dataset.path);
       row.classList.toggle('open', open);
       const kids = row.nextElementSibling;
-      if (kids?.classList.contains('tree-children')) kids.style.display = open ? 'block' : 'none';
+      if (!kids?.classList.contains('tree-children')) return;
+      if (open) this.ensureChildren(row);
+      kids.style.display = open ? 'block' : 'none';
     });
   },
 
@@ -281,9 +305,10 @@ const FileTree = {
 
   collapseAll() {
     this.expanded.clear();
+    // 当前文件所在路径保持展开，否则树会「忘了」你在哪
+    if (this.active) this.expandTo(this.active, { silent: true });
     this.persistExpanded();
     this.applyExpansion();
-    if (this.active) this.expandTo(this.active, { silent: true });
   },
 
   /** 展开到指定路径的所有祖先 */
@@ -305,27 +330,23 @@ const FileTree = {
   /* ─── 选中 / 高亮 ────────────────────────────────────── */
   select(rel) {
     this.selected = rel;
-    $$('.tree-row', this.container).forEach((r) => r.classList.toggle('selected', r.dataset.path === rel));
+    if (this._selectedRow?.isConnected) this._selectedRow.classList.remove('selected');
+    const row = this.rowFor(rel);
+    row?.classList.add('selected');
+    this._selectedRow = row;
   },
 
   setActive(rel) {
-    const needRerender = this.expandTo(rel);
-    if (needRerender) { this.renderRerender(); }
+    // 需要的话展开祖先目录（懒加载会在这一步补出 DOM）
+    if (this.expandTo(rel, { silent: true })) this.applyExpansion();
     this.active = rel;
     this.selected = rel;
-    $$('.tree-row', this.container).forEach((r) => {
-      r.classList.toggle('active', r.dataset.path === rel);
-      r.classList.toggle('selected', r.dataset.path === rel);
-    });
+    if (this._activeRow?.isConnected) this._activeRow.classList.remove('active', 'selected');
+    const row = this.rowFor(rel);
+    row?.classList.add('active', 'selected');
+    this._activeRow = row;
+    this._selectedRow = row;
     this.scrollIntoView(rel);
-  },
-
-  /** 展开状态变化后需要重建 DOM 才能显示子节点 */
-  renderRerender() {
-    const scrollTop = this.container.parentElement?.scrollTop || 0;
-    this.container.innerHTML = '';
-    this.container.appendChild(this.buildRows(this.tree, 0));
-    if (this.container.parentElement) this.container.parentElement.scrollTop = scrollTop;
   },
 
   scrollIntoView(rel, { center = true } = {}) {

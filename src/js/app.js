@@ -24,7 +24,10 @@ const App = {
   savedContent: new Map(),   // rel -> 磁盘上的内容（用于外部改动比对）
   mode: 'split',             // edit | split | preview
   splitDir: 'right',         // right | bottom
-  _watcherTimer: null,
+  _fsTimer: null,
+  _pendingFs: new Set(),
+  _lastSaveAt: 0,
+  _lastSavedRel: null,
   _autoSaveTimer: null,
 
   /* ═══ 启动 ═══════════════════════════════════════════ */
@@ -342,25 +345,18 @@ const App = {
 
     if (renameTab) {
       const [oldRel, newRel] = renameTab;
-      const content = Editor.getValue(oldRel);
-      const model = Editor.models.get(oldRel);
-      if (model) {
-        // 文件重命名后重建 model（URI 变了）
-        Editor.models.delete(oldRel);
-        model.dispose();
+      const inside = (p) => p === oldRel || p.startsWith(`${oldRel}/`);
+      const affected = Tabs.tabs.map((t) => t.path).filter(inside);
+      const wasActive = !!Tabs.activePath && inside(Tabs.activePath);
+
+      // 文件重命名 → 迁移那个标签；文件夹重命名 → 迁移里面所有已打开的标签
+      for (const oldPath of affected) {
+        await this.migrateTab(oldPath, newRel + oldPath.slice(oldRel.length));
       }
-      Tabs.rename(oldRel, newRel);
-      if (content !== undefined) {
-        const res = await window.notesAPI.readFile(newRel);
-        if (res.success) {
-          Editor.getModel(newRel, res.content);
-          Editor.markSaved(newRel);
-          this.savedContent.set(newRel, res.content);
-        }
-      }
-      if (Tabs.activePath === newRel) {
-        Editor.activePath = null;
-        Tabs.setActive(newRel);
+      Tabs.render();
+      if (wasActive && Tabs.activePath) {
+        Tabs.setActive(Tabs.activePath);
+        if (Editor.isDirty(Tabs.activePath)) this.markDirty(Tabs.activePath);
       }
     }
 
@@ -368,6 +364,52 @@ const App = {
       FileTree.select(select);
       FileTree.setActive(select);
     }
+  },
+
+  /**
+   * 把一个已打开的标签迁移到新路径。保留未保存的编辑内容、光标位置，
+   * 并把磁盘上的新内容记为「已保存」的基线。
+   */
+  async migrateTab(oldRel, newRel) {
+    const tab = Tabs.tabs.find((t) => t.path === oldRel);
+    if (!tab) return false;
+
+    const oldModel = Editor.models.get(oldRel);
+    const unsaved = oldModel ? oldModel.getValue() : null;
+    const wasDirty = oldModel ? Editor.isDirty(oldRel) : false;
+    const viewState = Editor._viewStates.get(oldRel) || null;
+    const savedOnDisk = this.savedContent.get(oldRel) ?? null;
+
+    // 先让编辑器松开旧 model，避免对正在使用的 model 调 saveViewState/dispose
+    if (Editor.activePath === oldRel) {
+      Editor.activePath = null;
+      Editor.instance?.setModel(null);
+    }
+    if (oldModel) {
+      Editor._viewStates.delete(oldRel);
+      Editor._savedVersion.delete(oldRel);
+      Editor.models.delete(oldRel);
+      oldModel.dispose();
+    }
+    this.savedContent.delete(oldRel);
+
+    tab.path = newRel;
+    tab.name = PathUtil.base(newRel);
+    if (Tabs.activePath === oldRel) Tabs.activePath = newRel;
+    if (viewState) Editor._viewStates.set(newRel, viewState);
+
+    // 磁盘上的新路径：改名后的文件内容 = 上次保存的版本
+    const res = await window.notesAPI.readFile(newRel);
+    const disk = res.success ? res.content : (savedOnDisk ?? unsaved ?? '');
+    const model = Editor.getModel(newRel, disk);
+    Editor.markSaved(newRel);                       // 磁盘内容作为保存点
+    if (wasDirty && unsaved !== null && unsaved !== disk) {
+      Editor._suppressChange = true;                // 恢复未保存的修改，但别触发脏状态联动
+      model.setValue(unsaved);
+      Editor._suppressChange = false;
+    }
+    this.savedContent.set(newRel, disk);
+    return true;
   },
 
   /* ═══ 打开 / 激活文件 ════════════════════════════════ */
@@ -484,6 +526,7 @@ const App = {
 
     // 记录时间，供文件监听忽略「自己刚写入」触发的事件
     this._lastSaveAt = Date.now();
+    this._lastSavedRel = rel;
     this.syncSavedState(rel, content);
     // 关闭实时预览时，保存后才刷新预览
     if (!this.prefs.livePreview && rel === Preview.target) Preview.update();
@@ -904,7 +947,8 @@ const App = {
       { label: '布局：上下分屏', icon: 'split-bottom', run: () => { this.setSplitDir('bottom'); this.setMode('split'); } },
       { label: '布局：仅预览', icon: 'eye', run: () => this.setMode('preview') },
       { label: '预览：弹出到独立窗口', icon: 'maximize', disabled: !hasFile, run: () => Preview.toggleDetachWindow() },
-      { label: '预览：刷新', icon: 'refresh', disabled: !hasFile, run: () => Preview.refresh(true) },
+      { label: '预览：刷新', icon: 'refresh', disabled: !hasFile, run: () => Preview.refresh() },
+      { label: '预览：从磁盘重新读取…', icon: 'refresh', disabled: !hasFile, run: () => Preview.reloadFromDisk() },
       { label: '预览：定位元素（点预览跳源码）', icon: 'crosshair', disabled: !hasFile, run: () => Preview.setJumpMode(true) },
       {
         label: `预览：滚动同步（当前${this.prefs.syncScroll ? '开' : '关'}）`,
@@ -991,17 +1035,34 @@ const App = {
   },
 
   /** 外部改动（别的程序改了文件） */
-  async onFsChanged(info) {
+  onFsChanged(info) {
     if (!this.vaultPath) return;
-    // 自己刚保存会触发 watcher，忽略短时间内的自身写入
-    const now = Date.now();
-    if (now - (this._lastSaveAt || 0) < 800) return;
+    const rel = String(info?.filename || '').replace(/\\/g, '/');
+    // 不关心的文件（隐藏文件 / 不支持的类型）直接忽略
+    if (rel && !/\.(html?|css|js|mjs|json|svg|png|jpe?g|gif|webp|md|txt|pdf)$/i.test(rel)) return;
+    if (rel) this._pendingFs.add(rel);
+    clearTimeout(this._fsTimer);
+    this._fsTimer = setTimeout(() => this._flushFsChanges(), 250);
+  },
+
+  async _flushFsChanges() {
+    const changed = new Set(this._pendingFs);
+    this._pendingFs.clear();
+
+    // 自己刚保存会触发 watcher，只忽略那一个文件，别的文件照常处理
+    if (Date.now() - (this._lastSaveAt || 0) < 800 && this._lastSavedRel) {
+      for (const f of Array.from(changed)) {
+        if (this.sameFile(this._lastSavedRel, f)) changed.delete(f);
+      }
+    }
 
     await this.refreshVault({ silent: true });
 
-    // 已打开且没有未保存改动的文件 → 重新载入
-    const filename = info?.filename;
+    // 只重读这次真正变化的文件，而不是把所有打开的标签都读一遍
+    const touched = (rel) => changed.size === 0 || Array.from(changed).some((f) => this.sameFile(rel, f));
+
     for (const tab of Tabs.tabs.slice()) {
+      if (!touched(tab.path)) continue;
       if (!Editor.isDirty(tab.path)) {
         const res = await window.notesAPI.readFile(tab.path);
         if (!res.success) continue;
@@ -1010,12 +1071,21 @@ const App = {
           this.syncSavedState(tab.path, res.content);
           if (tab.path === Preview.target) Preview.refresh();
         }
-      } else if (filename && tab.path.endsWith(filename)) {
+      } else {
         Toast.warn(`${PathUtil.base(tab.path)} 在外部被修改，但你本地有未保存的改动`, {
-          action: { label: '用磁盘版本覆盖', onClick: () => Preview.refresh(true) },
+          action: {
+            label: '用磁盘版本覆盖',
+            onClick: () => Preview.refresh({ fromDisk: true, force: true }),
+          },
         });
       }
     }
+  },
+
+  /** watcher 报的文件名可能只是 basename，宽松匹配 */
+  sameFile(rel, filename) {
+    if (!filename) return true;
+    return rel === filename || rel.endsWith(`/${filename}`) || PathUtil.base(rel) === filename;
   },
 
   /* ═══ 窗口标题 / 状态栏 ══════════════════════════════ */

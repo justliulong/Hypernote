@@ -17,7 +17,10 @@ const Preview = {
   barActions: null,
   target: null,
   _seq: 0,
-  _debounced: null,
+  _updateTimer: null,
+  _cursorTimer: null,
+  _rendered: null,        // 上一次真正推进预览的源码（内容没变就不重载）
+  _contentHeight: 0,
 
   /* 编辑 ↔ 预览联动 */
   syncScroll: true,
@@ -34,7 +37,7 @@ const Preview = {
     this.labelName = $('#preview-name');
     this.labelDir = $('#preview-dir');
 
-    this._debounced = debounce(() => this.update(), 450);
+    this._updateTimer = null;
 
     // 接收预览内容的 postMessage（链接跳转 / 高度上报 / 定位 / 滚动）
     window.addEventListener('message', (e) => this.onMessage(e));
@@ -42,11 +45,12 @@ const Preview = {
     // 实时预览会频繁重载 iframe，每次加载完成都要重新和预览页握手
     this.frame?.addEventListener('load', () => this.onFrameLoad());
 
-    $('#btn-preview-refresh')?.addEventListener('click', () => this.refresh(true));
+    $('#btn-preview-refresh')?.addEventListener('click', () => this.refresh());
     $('#btn-preview-detach')?.addEventListener('click', () => this.toggleDetachWindow());
     $('#btn-preview-external')?.addEventListener('click', () => this.openExternal());
     $('#btn-preview-sync')?.addEventListener('click', () => this.toggleSyncScroll());
     $('#btn-preview-jump')?.addEventListener('click', () => this.setJumpMode(!this.jumpMode));
+    $('#btn-preview-live')?.addEventListener('click', () => this.toggleLivePreview());
 
     this.syncScroll = App.prefs.syncScroll !== false;
     this.updateControls();
@@ -64,7 +68,10 @@ const Preview = {
     const content = Editor.getValue(rel) ?? '';
     this.checkExternalResources(content);
     await this.pushBuffer();
-    if (changed) this.reload();
+    if (changed) {
+      this._rendered = null;
+      this.reload();
+    }
   },
 
   updateLabel() {
@@ -80,6 +87,9 @@ const Preview = {
     this.target = null;
     this._seq++;
     this._frameReady = false;
+    this._rendered = null;
+    clearTimeout(this._updateTimer);
+    clearTimeout(this._cursorTimer);
     this.jumpMode = false;
     this.updateControls();
     if (this.frame) {
@@ -100,10 +110,16 @@ const Preview = {
     await window.notesAPI.setLivePreview(this.target, content);
   },
 
-  /** 编辑器改动后调用，防抖刷新 */
+  /**
+   * 编辑器改动后调用。防抖时长随文档大小自适应 —— 长文档整页重载代价高，
+   * 频率降下来，打字也不会一直闪。
+   */
   scheduleUpdate() {
     if (!App.prefs.livePreview || !this.target) return;
-    this._debounced();
+    clearTimeout(this._updateTimer);
+    const len = (Editor.getValue(this.target) || '').length;
+    const wait = len > 200000 ? 1200 : len > 60000 ? 700 : 400;
+    this._updateTimer = setTimeout(() => this.update(), wait);
   },
 
   /* ─── 外网可用性 ─────────────────────────────────────── */
@@ -179,23 +195,51 @@ const Preview = {
   async update() {
     if (!this.target) return;
     const content = Editor.getValue(this.target) ?? '';
+    // 内容没变就不整页重载（例如撤销回到原样，或只移动了光标）
+    if (this._frameReady && content === this._rendered) return;
+    this._rendered = content;
     this.checkExternalResources(content);
     await this.pushBuffer();
     this.reload();
     window.notesAPI.reloadPreviewWindow();
   },
 
-  /** 强制刷新（重新读盘，用于外部改动后） */
-  async refresh(fromDisk = false) {
+  /**
+   * 重新加载预览。默认只用编辑器里的内容重载；fromDisk 才重新读磁盘。
+   * 只有 force 时才会拿磁盘内容覆盖编辑器缓冲区，避免误丢未保存的修改。
+   */
+  async refresh({ fromDisk = false, force = false } = {}) {
     if (!this.target) return;
     if (fromDisk) {
-      const res = await window.notesAPI.readFile(this.target);
-      if (res.success) {
-        Editor.refreshModel(this.target, res.content);
-        App.syncSavedState(this.target, res.content);
+      if (Editor.isDirty(this.target) && !force) {
+        Toast.warn('编辑器里有未保存的修改，已用当前内容刷新预览', { timeout: 2800 });
+      } else {
+        const res = await window.notesAPI.readFile(this.target);
+        if (res.success) {
+          Editor.refreshModel(this.target, res.content);
+          App.syncSavedState(this.target, res.content);
+        }
       }
     }
+    this._rendered = null;     // 手动刷新即使内容没变也要重载
     await this.update();
+  },
+
+  /** 明确地用磁盘版本覆盖编辑器（会二次确认） */
+  async reloadFromDisk() {
+    if (!this.target) return;
+    if (Editor.isDirty(this.target)) {
+      const ok = await askConfirm({
+        title: '从磁盘重新读取',
+        icon: 'alert-triangle',
+        danger: true,
+        message: `<code>${escapeHtml(PathUtil.base(this.target))}</code> 有未保存的修改。`,
+        detail: '重新读取会用文件里的版本覆盖编辑器内容，未保存的修改将会丢失。',
+        confirmLabel: '重新读取',
+      });
+      if (!ok) return;
+    }
+    await this.refresh({ fromDisk: true, force: true });
   },
 
   reload() {
@@ -262,6 +306,38 @@ const Preview = {
         ? '定位模式：点击预览元素跳到源码（Esc 退出）'
         : '定位模式：点击后点预览里的元素可跳到对应源码（也可直接 Ctrl+点击）';
     }
+
+    // 暂停 / 恢复实时刷新（和设置里的「实时预览」是同一个开关）
+    const liveBtn = $('#btn-preview-live');
+    if (liveBtn) {
+      const paused = !App.prefs.livePreview;
+      liveBtn.innerHTML = Icons.svg(paused ? 'play' : 'pause');
+      liveBtn.classList.toggle('active', paused);
+      liveBtn.title = paused ? '实时预览已暂停，点击恢复' : '实时预览：开（点击暂停）';
+    }
+  },
+
+  toggleLivePreview() {
+    const next = !App.prefs.livePreview;
+    App.prefs.livePreview = next;
+    window.notesAPI.setPref('livePreview', next);
+    this.updateControls();
+    Toast.info(next ? '实时预览：开' : '实时预览：已暂停，改动不再自动刷新', { timeout: 2200 });
+    if (next && this.target) {
+      this._rendered = null;
+      this.update();
+    }
+  },
+
+  /** 编辑器光标移动 → 预览里对应的元素描边（独立于滚动同步开关） */
+  onEditorCursor(line) {
+    if (!line || !this.target || App.mode !== 'split' || !this._frameReady) return;
+    clearTimeout(this._cursorTimer);
+    this._cursorTimer = setTimeout(() => {
+      if (this.target && App.mode === 'split' && this._frameReady) {
+        this.postToFrame({ type: 'cursor-line', line });
+      }
+    }, 220);
   },
 
   toggleSyncScroll() {

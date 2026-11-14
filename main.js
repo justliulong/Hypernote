@@ -97,6 +97,7 @@ const PREVIEW_HELPER = `
 <style data-notes-injected>
   [data-notes-hover] { outline: 2px solid #89b4fa !important; outline-offset: -1px !important; }
   [data-notes-flash] { outline: 2px solid #f9e2af !important; outline-offset: 2px !important; }
+  [data-notes-cursor] { outline: 1.5px dashed rgba(137, 180, 250, 0.75) !important; outline-offset: 2px !important; }
   html[data-notes-jump], html[data-notes-jump] * { cursor: crosshair !important; }
 </style>
 <script data-notes-injected>
@@ -304,6 +305,28 @@ const PREVIEW_HELPER = `
     setTimeout(function () { target.removeAttribute('data-notes-flash'); }, 1600);
   }
 
+  // 编辑器光标所在行 → 预览里包含该行的最内层元素描边
+  var cursorNode = null;
+  function markCursor(line) {
+    if (!line) return;
+    var nodes = document.querySelectorAll('[' + SRC + ']');
+    var hit = null;
+    var hitSpan = Infinity;
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var start = parseInt(node.getAttribute(SRC), 10);
+      if (start > line) break;
+      if (node === document.body || node === document.documentElement) continue;
+      var end = parseInt(node.getAttribute(END), 10) || start;
+      if (line > end) continue;
+      if (end - start < hitSpan) { hit = node; hitSpan = end - start; }
+    }
+    if (cursorNode === hit) return;
+    if (cursorNode) cursorNode.removeAttribute('data-notes-cursor');
+    cursorNode = hit;
+    if (hit) hit.setAttribute('data-notes-cursor', '');
+  }
+
   window.addEventListener('message', function (ev) {
     var data = ev.data;
     if (!data || data.__notes !== true) return;
@@ -317,6 +340,8 @@ const PREVIEW_HELPER = `
       syncToLine(data.line);
     } else if (data.type === 'flash-source') {
       flashLine(data.line);
+    } else if (data.type === 'cursor-line') {
+      markCursor(data.line);
     }
   });
 
@@ -735,7 +760,21 @@ handle('file:save', async (rel, content) => {
   const full = insideVault(rel);
   if (!full) return { success: false, error: '路径无效' };
   await fsp.mkdir(path.dirname(full), { recursive: true });
-  await fsp.writeFile(full, content, 'utf-8');
+
+  // 原子写：先写同目录的隐藏临时文件再 rename。
+  // 写到一半崩溃/断电时，原笔记还是完整的旧版本，不会变成半截文件。
+  const dir = path.dirname(full);
+  const tmp = path.join(dir, `.${path.basename(full)}.tmp-${process.pid}-${Date.now()}`);
+  try {
+    await fsp.writeFile(tmp, content, 'utf-8');
+    const prev = await fsp.stat(full).catch(() => null);
+    if (prev) await fsp.chmod(tmp, prev.mode).catch(() => {});   // 保留原权限
+    await fsp.rename(tmp, full);
+  } catch (err) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+
   const st = await fsp.stat(full);
   // 若保存的正是预览中的文件，同步缓冲
   if (state.liveFile === rel) state.liveContent = content;
@@ -823,24 +862,42 @@ handle('fs:reveal', async (rel) => {
 });
 
 // — 搜索 —
+// 每次查询带一个递增 token：新的查询会立刻让旧查询收手，并且每扫一批文件
+// 就让出一次事件循环，避免大库搜索时主进程卡住整个窗口。
+let searchToken = 0;
+
 handle('search:query', async (query, opts = {}) => {
   if (!state.vault) return { success: false, error: '未打开笔记库' };
   const q = (query || '').trim();
   if (q.length < 2) return { success: true, results: [], truncated: false };
 
+  const token = ++searchToken;
   const caseSensitive = !!opts.caseSensitive;
+  const overrides = opts.overrides || {};
   const needle = caseSensitive ? q : q.toLowerCase();
   const files = await collectHtml(state.vault);
   const results = [];
   const LIMIT = 200;
+  let scanned = 0;
 
   for (const filePath of files) {
+    if (token !== searchToken) {
+      return { success: true, results: [], truncated: false, superseded: true };
+    }
     if (results.length >= LIMIT) break;
+    if (++scanned % 20 === 0) await new Promise((r) => setImmediate(r));
+
+    const rel = path.relative(path.resolve(state.vault), filePath).split(path.sep).join('/');
+
+    // 编辑器里有未保存改动的文件用内存里的版本，别的读磁盘
     let content;
-    try { content = await fsp.readFile(filePath, 'utf-8'); } catch { continue; }
+    if (Object.prototype.hasOwnProperty.call(overrides, rel)) {
+      content = String(overrides[rel] ?? '');
+    } else {
+      try { content = await fsp.readFile(filePath, 'utf-8'); } catch { continue; }
+    }
 
     const haystack = caseSensitive ? content : content.toLowerCase();
-    const rel = path.relative(path.resolve(state.vault), filePath).split(path.sep).join('/');
     const matches = [];
 
     let idx = haystack.indexOf(needle);
@@ -865,12 +922,16 @@ handle('search:query', async (query, opts = {}) => {
     const start = Math.max(0, anchor - 60);
     const snippet = (start > 0 ? '…' : '') + plain.slice(start, anchor + 140) + '…';
 
+    // 第一个命中在原始源码里的行号，点结果可以直接跳过去
+    const line = content.slice(0, matches[0]).split('\n').length;
+
     const st = await fsp.stat(filePath).catch(() => null);
     results.push({
       path: rel,
       name: path.basename(filePath),
       dir: path.dirname(rel) === '.' ? '' : path.dirname(rel),
       count: matches.length,
+      line,
       snippet,
       mtime: st ? st.mtimeMs : 0,
     });
@@ -896,12 +957,18 @@ handle('preview:clear-live', async () => {
 handle('preview:open-window', async (rel, content) => {
   state.liveFile = rel || null;
   state.liveContent = content === undefined ? null : content;
+  const existed = !!previewWindow && !previewWindow.isDestroyed();
   createPreviewWindow();
-  // 等窗口就绪后再通知它加载目标
   if (previewWindow) {
-    previewWindow.webContents.once('did-finish-load', () => {
+    if (existed) {
+      // 窗口已经加载好了，直接发目标；不能再挂 did-finish-load，否则会残留监听
       previewWindow.webContents.send('preview:target', { path: rel });
-    });
+    } else {
+      // 等窗口就绪后再通知它加载目标
+      previewWindow.webContents.once('did-finish-load', () => {
+        previewWindow?.webContents.send('preview:target', { path: rel });
+      });
+    }
   }
   return { success: true };
 });

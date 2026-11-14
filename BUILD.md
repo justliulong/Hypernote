@@ -76,7 +76,7 @@ npm run build:linux:pacman   # 只出 pacman
 |------|------|
 | `Hypernote-1.0.0-x86_64.AppImage` | 免安装，`chmod +x` 后直接运行 |
 | `Hypernote-1.0.0-amd64.deb` | `sudo dpkg -i` |
-| `Hypernote-1.0.0-x86_64.pkg.tar.zst` | `sudo pacman -U` |
+| `Hypernote-1.0.0-x64.pacman` | `sudo pacman -U` |
 
 同时会生成 `dist/linux-unpacked/`，那是未压缩的目录版，**排查问题先跑它**：
 
