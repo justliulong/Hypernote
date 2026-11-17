@@ -20,6 +20,12 @@ const App = {
     syncScroll: true,
     sidebarWidth: 262,
     splitRatio: 0.5,
+    trashInsteadOfDelete: true,
+    pasteImageDir: 'assets',
+    aiProtocol: 'openai',
+    aiBaseUrl: '',
+    aiApiKey: '',
+    aiModel: '',
   },
   savedContent: new Map(),   // rel -> 磁盘上的内容（用于外部改动比对）
   mode: 'split',             // edit | split | preview
@@ -49,6 +55,12 @@ const App = {
         syncScroll: p.syncScroll ?? this.prefs.syncScroll,
         sidebarWidth: p.sidebarWidth || this.prefs.sidebarWidth,
         splitRatio: p.splitRatio || this.prefs.splitRatio,
+        trashInsteadOfDelete: p.trashInsteadOfDelete ?? this.prefs.trashInsteadOfDelete,
+        pasteImageDir: p.pasteImageDir || this.prefs.pasteImageDir,
+        aiProtocol: p.aiProtocol === 'anthropic' ? 'anthropic' : (p.aiProtocol || this.prefs.aiProtocol),
+        aiBaseUrl: p.aiBaseUrl ?? this.prefs.aiBaseUrl,
+        aiApiKey: p.aiApiKey ?? this.prefs.aiApiKey,
+        aiModel: p.aiModel ?? this.prefs.aiModel,
       });
     }
 
@@ -224,6 +236,7 @@ const App = {
     this.bindResizers();
 
     $('#btn-app-menu').addEventListener('click', (e) => this.showAppMenu(e.currentTarget));
+    $('#btn-ai')?.addEventListener('click', () => AI.toggle());
     $('#btn-theme').addEventListener('click', () => {
       const next = Theme.cycle();
       Toast.info(`主题：${{ dark: '暗色', light: '浅色', system: '跟随系统' }[next]}`, { timeout: 1500 });
@@ -273,17 +286,36 @@ const App = {
 
   showAppMenu(anchor) {
     const hasVault = !!this.vaultPath;
+    const hasFile = !!Tabs.activePath;
+    const recents = this.recentFiles().slice(0, 6);
     Menu.open([
       { type: 'label', label: '笔记库' },
       { label: '打开文件夹…', icon: 'folder', hint: 'Ctrl+O', onSelect: () => this.openVault() },
       { label: '刷新', icon: 'refresh', hint: 'F5', disabled: !hasVault, onSelect: () => this.refreshVault() },
       { label: '在文件管理器中显示', icon: 'folder-reveal', disabled: !hasVault, onSelect: () => window.notesAPI.revealVault() },
+      ...(recents.length ? [
+        { separator: true },
+        { type: 'label', label: '最近笔记' },
+        ...recents.map((rel) => ({ label: PathUtil.base(rel), icon: 'file', title: rel, onSelect: () => this.openFile(rel) })),
+      ] : []),
       { separator: true },
       { type: 'label', label: '新建' },
       { label: '新建笔记', icon: 'file-plus', hint: 'Ctrl+N', disabled: !hasVault, onSelect: () => this.createNote({}) },
-      { label: '新建文件夹', icon: 'folder-plus', disabled: !hasVault, onSelect: () => this.createFolder({}) },
+      { label: '新建文件夹', icon: 'folder-plus', hint: 'Ctrl+Shift+N', disabled: !hasVault, onSelect: () => this.createFolder({}) },
       { separator: true },
-      { label: '命令面板…', icon: 'command', hint: 'Ctrl+P', onSelect: () => this.openPalette() },
+      { type: 'label', label: '当前笔记' },
+      { label: '大纲', icon: 'list', disabled: !hasFile, onSelect: () => this.showOutline() },
+      { label: '反向链接', icon: 'link', disabled: !hasFile, onSelect: () => this.showBacklinks() },
+      { label: '历史版本', icon: 'history', disabled: !hasFile, onSelect: () => this.showHistory() },
+      { label: '复制笔记链接', icon: 'clipboard-copy', disabled: !hasFile, onSelect: () => this.copyNoteLink() },
+      { label: '导出：单文件 HTML', icon: 'file-down', disabled: !hasFile, onSelect: () => this.exportInline() },
+      { label: '导出：PDF', icon: 'file-output', disabled: !hasFile, onSelect: () => this.exportPdfNote() },
+      { separator: true },
+      { type: 'label', label: '工具' },
+      { label: 'AI 助手…', icon: 'sparkles', hint: 'Ctrl+I', onSelect: () => AI.toggle() },
+      { label: '插入组件…', icon: 'plus', disabled: !hasFile, onSelect: () => Templates.open() },
+      { label: '快速打开笔记…', icon: 'search', hint: 'Ctrl+P', disabled: !hasVault, onSelect: () => this.openQuickOpen() },
+      { label: '命令面板…', icon: 'command', hint: 'Ctrl+Shift+P', onSelect: () => this.openPalette() },
       { label: '查找全部…', icon: 'search', hint: 'Ctrl+Shift+F', disabled: !hasVault, onSelect: () => Search.toggle(true) },
       { separator: true },
       { label: '设置…', icon: 'settings', hint: 'Ctrl+,', onSelect: () => this.openSettings() },
@@ -447,6 +479,19 @@ const App = {
     Status.setFile(rel);
     Tabs.markDirty(rel);
     this.updateWindowTitle();
+    this.pushRecent(rel);
+  },
+
+  /* ═══ 最近打开 ═══════════════════════════════════════ */
+  pushRecent(rel) {
+    if (!rel) return;
+    const list = this.loadUiState('recentFiles', []).filter((p) => p !== rel);
+    list.unshift(rel);
+    this.saveUiState('recentFiles', list.slice(0, 12));
+  },
+
+  recentFiles() {
+    return this.loadUiState('recentFiles', []).filter((p) => FileTree.findNode(p));
   },
 
   onModelChanged(model) {
@@ -546,6 +591,245 @@ const App = {
     else Toast.warn(`已保存 ${ok}/${dirty.length} 个文件`);
   },
 
+  /* ═══ 快速打开（Ctrl+P 文件切换器） ══════════════════ */
+  flattenFiles() {
+    const out = [];
+    (function walk(nodes) {
+      for (const n of nodes || []) {
+        if (n.type === 'folder') walk(n.children);
+        else out.push(n.path);
+      }
+    })(this.tree);
+    return out;
+  },
+
+  openQuickOpen() {
+    if (!this.vaultPath) { Toast.warn('先打开一个笔记文件夹'); return; }
+    const files = this.flattenFiles();
+    if (!files.length) { Toast.info('笔记库里还没有笔记'); return; }
+    const openSet = new Set(Tabs.tabs.map((t) => t.path));
+    const items = files.map((rel) => ({
+      label: PathUtil.base(rel),
+      keywords: rel,
+      icon: Fmt.iconName(rel),
+      hint: PathUtil.dir(rel) || null,
+      run: () => this.openFile(rel),
+    }));
+    // 打开中的排前面，其余按名称排序；大库只渲染前 200 条
+    items.sort((a, b) => {
+      const ao = openSet.has(a.keywords) ? 0 : 1;
+      const bo = openSet.has(b.keywords) ? 0 : 1;
+      return ao !== bo ? ao - bo : a.label.localeCompare(b.label, 'zh');
+    });
+    Palette.open(items.slice(0, 200), { placeholder: '打开笔记…（模糊匹配文件名 / 路径）' });
+  },
+
+  /* ═══ 粘贴图片落盘 ═══════════════════════════════════ */
+  async handleImagePaste(file) {
+    if (!this.vaultPath || !Tabs.activePath) { Toast.warn('先打开一篇笔记'); return; }
+    const noteRel = Tabs.activePath;
+    const dirName = this.prefs.pasteImageDir || 'assets';
+    const imgDirRel = PathUtil.join(PathUtil.dir(noteRel), dirName);
+
+    const ext = (file.name.match(/\.\w{2,5}$/) || ['.png'])[0].toLowerCase();
+    const stamp = (() => {
+      const d = new Date();
+      const p = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    })();
+    const imgRel = PathUtil.join(imgDirRel, `${PathUtil.stem(noteRel)}-${stamp}${ext}`);
+
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(fr.error);
+        fr.readAsDataURL(file);
+      });
+      const res = await window.notesAPI.saveBinary(imgRel, dataUrl.split(',')[1]);
+      if (!res.success) { Toast.error(`图片保存失败：${res.error}`); return; }
+
+      const src = PathUtil.relTo(noteRel, imgRel);
+      Editor.insertText(`<img src="${src}" alt="">`);
+      Toast.ok(`已保存图片 ${imgRel}`, { timeout: 2000 });
+      await this.afterTreeChange({ select: noteRel });
+    } catch (err) {
+      Toast.error(`图片处理失败：${err?.message || err}`);
+    }
+  },
+
+  /* ═══ 大纲 ═══════════════════════════════════════════ */
+  showOutline(rel = this.activePath()) {
+    if (!rel) { Toast.warn('先打开一篇笔记'); return; }
+    const text = Editor.getValue(rel) || '';
+    const items = [];
+    text.split('\n').forEach((line, i) => {
+      const m = line.match(/^\s*<h([1-6])(?:\s[^>]*)?>([\s\S]*?)<\/h\1>\s*$/i);
+      if (!m) return;
+      const plain = m[2].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      if (plain) items.push({ level: Number(m[1]), text: plain, line: i + 1 });
+    });
+    if (!items.length) { Toast.info('这篇笔记里没有 <h1>–<h6> 标题'); return; }
+
+    Modal.open({
+      title: `大纲 — ${PathUtil.base(rel)}`,
+      icon: 'list',
+      width: 520,
+      body: el('div', { class: 'modal-list' }, items.map((it) => el('div', {
+        class: 'list-row',
+        style: `padding-left:${(it.level - 1) * 18 + 8}px`,
+        onclick: () => { Modal.closeTop(); Editor.revealLine(it.line); },
+      }, [
+        el('span', { class: 'list-badge', text: `H${it.level}` }),
+        el('span', { class: 'list-text', text: it.text }),
+        el('span', { class: 'hint mono', text: `:${it.line}` }),
+      ]))),
+      footer: [el('button', { class: 'btn btn-primary', text: '关闭', onclick: () => Modal.closeTop() })],
+    });
+  },
+
+  /* ═══ 反向链接 ═══════════════════════════════════════ */
+  async showBacklinks(rel = this.activePath()) {
+    if (!rel) { Toast.warn('先打开一篇笔记'); return; }
+    const entry = Modal.open({
+      title: `反向链接 — ${PathUtil.base(rel)}`,
+      icon: 'link',
+      width: 520,
+      body: el('div', { class: 'palette-empty', text: '正在查找引用…' }),
+      footer: [el('button', { class: 'btn btn-primary', text: '关闭', onclick: () => Modal.closeTop() })],
+    });
+    const body = entry.modal.querySelector('.modal-body');
+
+    // 用文件名搜全文，再逐个核对链接是否真的指向这篇
+    const res = await window.notesAPI.search(PathUtil.base(rel), {});
+    if (!res.success) { body.textContent = `查找失败：${res.error}`; return; }
+
+    const links = [];
+    for (const item of res.results.slice(0, 60)) {
+      if (item.path === rel) continue;
+      const fr = await window.notesAPI.readFile(item.path);
+      if (!fr.success) continue;
+      const lines = findRefsTo(fr.content, item.path, rel);
+      if (lines.length) links.push({ ...item, lines });
+    }
+
+    if (!links.length) {
+      body.replaceChildren(el('div', { class: 'palette-empty', text: '没有其他笔记引用它' }));
+      return;
+    }
+    body.replaceChildren(el('div', { class: 'modal-list' }, links.map((l) => el('div', {
+      class: 'list-row',
+      title: l.path,
+      onclick: () => { Modal.closeTop(); this.openFile(l.path, { line: l.lines[0] }); },
+    }, [
+      Icons.el('file-code'),
+      el('span', { class: 'list-text', text: l.name }),
+      el('span', { class: 'hint mono', text: l.lines.map((n) => `:${n}`).join(' ') }),
+    ]))));
+  },
+
+  /* ═══ 本地历史 ═══════════════════════════════════════ */
+  async showHistory(rel = this.activePath()) {
+    if (!rel) { Toast.warn('先打开一篇笔记'); return; }
+    const entry = Modal.open({
+      title: `历史版本 — ${PathUtil.base(rel)}`,
+      icon: 'history',
+      width: 460,
+      body: el('div', { class: 'palette-empty', text: '读取历史…' }),
+      footer: [el('button', { class: 'btn btn-primary', text: '关闭', onclick: () => Modal.closeTop() })],
+    });
+    const body = entry.modal.querySelector('.modal-body');
+
+    const res = await window.notesAPI.historyList(rel);
+    if (!res.success) { body.textContent = `读取失败：${res.error}`; return; }
+    if (!res.versions.length) {
+      body.textContent = '还没有历史版本。每次保存前的旧版本会自动存档（保留最近 50 份）。';
+      return;
+    }
+
+    body.replaceChildren(el('div', { class: 'modal-list' }, res.versions.map((v) => el('div', { class: 'list-row' }, [
+      el('span', { class: 'list-text mono', text: fmtStamp(v.ts) }),
+      el('button', {
+        class: 'btn btn-ghost btn-sm', text: '查看',
+        onclick: async () => {
+          const r = await window.notesAPI.historyRead(rel, v.ts);
+          if (!r.success) { Toast.error(`读取失败：${r.error}`); return; }
+          showSnapshotPreview(rel, fmtStamp(v.ts), r.content);
+        },
+      }),
+      el('button', {
+        class: 'btn btn-ghost btn-sm', text: '恢复',
+        onclick: () => this.restoreHistoryVersion(rel, v.ts),
+      }),
+    ]))));
+  },
+
+  async restoreHistoryVersion(rel, ts) {
+    const dirty = Editor.isDirty(rel) && Tabs.has(rel);
+    const ok = await askConfirm({
+      title: '恢复历史版本',
+      icon: 'history',
+      message: `把 <code>${escapeHtml(PathUtil.base(rel))}</code> 恢复到 ${fmtStamp(ts)} 的版本吗？`,
+      detail: dirty
+        ? '注意：当前标签有未保存的修改，恢复会<b>覆盖这些修改</b>（当前内容会先存入历史）。'
+        : '当前内容会先存入历史，之后仍可找回。',
+      confirmLabel: '恢复',
+    });
+    if (!ok) return;
+
+    const r = await window.notesAPI.historyRead(rel, ts);
+    if (!r.success) { Toast.error(`读取失败：${r.error}`); return; }
+    const res = await window.notesAPI.saveFile(rel, r.content);
+    if (!res.success) { Toast.error(`恢复失败：${res.error}`); return; }
+
+    this.savedContent.set(rel, r.content);
+    Editor.refreshModel(rel, r.content);
+    Editor.markSaved(rel);
+    Tabs.markDirty(rel);
+    Status.setDirty(this.anyDirty());
+    if (rel === Preview.target) Preview.refresh();
+    Modal.closeTop();
+    Toast.ok(`已恢复到 ${fmtStamp(ts)}`);
+  },
+
+  /* ═══ 导出 ═══════════════════════════════════════════ */
+  async exportInline(rel = this.activePath()) {
+    if (!rel) { Toast.warn('先打开一篇笔记'); return; }
+    if (Editor.isDirty(rel)) await this.save(rel, { silent: true });
+    const res = await window.notesAPI.readFile(rel);
+    if (!res.success) { Toast.error(`读取失败：${res.error}`); return; }
+
+    Toast.info('正在内联本地资源…', { timeout: 2500 });
+    const html = await inlineAssets(rel, res.content);
+    const out = await window.notesAPI.saveAs(`${PathUtil.stem(rel)}.standalone.html`, html);
+    if (out.canceled) return;
+    if (!out.success) { Toast.error(`导出失败：${out.error}`); return; }
+    Toast.ok('已导出单文件 HTML');
+    window.notesAPI.openPath(out.path);
+  },
+
+  async exportPdfNote(rel = this.activePath()) {
+    if (!rel) { Toast.warn('先打开一篇笔记'); return; }
+    if (Editor.isDirty(rel)) await this.save(rel, { silent: true });   // PDF 从磁盘渲染
+    Toast.info('正在渲染 PDF…', { timeout: 6000 });
+    const res = await window.notesAPI.exportPdf(rel);
+    if (res.canceled) return;
+    if (!res.success) { Toast.error(`导出失败：${res.error}`); return; }
+    Toast.ok('已导出 PDF');
+    window.notesAPI.openPath(res.path);
+  },
+
+  async copyNoteLink(rel = this.activePath()) {
+    if (!rel) return;
+    const url = `${window.notesAPI.previewOrigin}/${rel.split('/').map(encodeURIComponent).join('/')}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      Toast.ok('笔记链接已复制（预览中可点击跳转）', { timeout: 1800 });
+    } catch {
+      Toast.error('复制失败');
+    }
+  },
+
   /* ═══ 新建 / 重命名 / 删除 ═══════════════════════════ */
   async createNote({ dir = '' } = {}) {
     if (!this.vaultPath) { Toast.warn('先打开一个笔记文件夹'); return; }
@@ -614,6 +898,7 @@ const App = {
   async deleteEntry(rel, isFolder = false) {
     if (!rel) return;
     const name = PathUtil.base(rel);
+    const useTrash = this.prefs.trashInsteadOfDelete !== false;
 
     let ok;
     if (isFolder) {
@@ -625,7 +910,7 @@ const App = {
         danger: true,
         message: `确定要删除文件夹 <code>${escapeHtml(name)}</code> 吗？`,
         detail: count
-          ? `其中包含 <span class="mono">${count}</span> 个文件，将会<b>一并删除且无法撤销</b>。`
+          ? `其中包含 <span class="mono">${count}</span> 个文件，将会${useTrash ? '<b>移入系统回收站</b>' : '<b>一并删除且无法撤销</b>'}。`
           : '该文件夹是空的。',
         confirmLabel: '删除',
       });
@@ -635,7 +920,7 @@ const App = {
         icon: 'trash',
         danger: true,
         message: `确定要删除 <code>${escapeHtml(rel)}</code> 吗？`,
-        detail: '此操作不可撤销。',
+        detail: useTrash ? '将移入系统回收站，需要时可以在回收站恢复。' : '此操作不可撤销。',
         confirmLabel: '删除',
       });
     }
@@ -673,7 +958,7 @@ const App = {
     this.savedContent.delete(rel);
 
     await this.afterTreeChange({ select: null });
-    Toast.ok(`已删除 ${name}`);
+    Toast.ok(`已删除 ${name}${useTrash ? '（已移入回收站）' : ''}`);
   },
 
   async reveal(rel) {
@@ -832,6 +1117,99 @@ const App = {
       ]);
     };
 
+    const mkText = (key, label, desc, { validate = null, apply = null, inputType = 'text', style = 'width:200px' } = {}) => {
+      const input = el('input', { type: inputType, value: String(this.prefs[key] ?? ''), spellcheck: 'false', style });
+      input.addEventListener('change', async () => {
+        const v = input.value.trim();
+        const err = validate ? validate(v) : (v ? null : '不能为空');
+        if (err) { Toast.warn(err); input.value = String(this.prefs[key] ?? ''); return; }
+        this.prefs[key] = v;
+        await window.notesAPI.setPref(key, v);
+        apply?.(v);
+      });
+      return el('div', { class: 'setting' }, [
+        el('div', { class: 'setting-info' }, [el('b', { text: label }), el('span', { text: desc })]),
+        input,
+      ]);
+    };
+
+    const mkSection = (label) => el('div', { class: 'settings-group', text: label });
+
+    // ── AI 服务配置 ──
+    const AI_PRESETS = {
+      deepseek: { label: 'DeepSeek', protocol: 'openai', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+      zhipu: { label: '智谱 GLM', protocol: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+      openai: { label: 'OpenAI', protocol: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      openrouter: { label: 'OpenRouter', protocol: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+      ollama: { label: 'Ollama（本机）', protocol: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b' },
+      anthropic: { label: 'Anthropic Claude', protocol: 'anthropic', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-5' },
+      custom: { label: '自定义', protocol: App.prefs.aiProtocol || 'openai', baseUrl: '', model: '' },
+    };
+    const aiRefs = {};
+    const mkAiInput = (key, type, style) => {
+      const input = el('input', {
+        type, value: String(App.prefs[key] ?? ''), spellcheck: 'false', style,
+        onchange: async () => {
+          const v = input.value.trim();
+          App.prefs[key] = v;
+          await window.notesAPI.setPref(key, v);
+        },
+      });
+      aiRefs[key] = input;
+      return input;
+    };
+    const applyPreset = async (key) => {
+      const p = AI_PRESETS[key];
+      if (!p || key === 'custom') return;
+      App.prefs.aiProtocol = p.protocol;
+      App.prefs.aiBaseUrl = p.baseUrl;
+      App.prefs.aiModel = p.model;
+      for (const [k, v] of [['aiProtocol', p.protocol], ['aiBaseUrl', p.baseUrl], ['aiModel', p.model]]) {
+        await window.notesAPI.setPref(k, v);
+        if (aiRefs[k]) aiRefs[k].value = v;
+      }
+    };
+    const presetSelect = el('select', {
+      class: 'ai-ctx', title: '常用服务预设',
+      onchange: (e) => applyPreset(e.target.value),
+    }, [
+      el('option', { value: '', text: '选择预设…' }),
+      ...Object.entries(AI_PRESETS).map(([k, p]) => el('option', { value: k, text: p.label })),
+    ]);
+    const protocolSelect = el('select', {
+      class: 'ai-ctx', title: 'API 协议',
+      onchange: async (e) => {
+        App.prefs.aiProtocol = e.target.value;
+        await window.notesAPI.setPref('aiProtocol', e.target.value);
+      },
+    }, [
+      el('option', { value: 'openai', text: 'OpenAI 兼容' }),
+      el('option', { value: 'anthropic', text: 'Anthropic' }),
+    ]);
+    protocolSelect.value = App.prefs.aiProtocol || 'openai';
+
+    const testBtn = el('button', { class: 'btn btn-ghost btn-sm', text: '测试连接' });
+    const testStatus = el('span', { class: 'ai-test-status', text: '' });
+    testBtn.addEventListener('click', async () => {
+      testBtn.disabled = true;
+      testStatus.textContent = '连接中…';
+      testStatus.className = 'ai-test-status';
+      const res = await window.notesAPI.aiTest();
+      testBtn.disabled = false;
+      if (res.success) {
+        testStatus.textContent = `连接成功${res.reply ? `：${res.reply}` : ''}`;
+        testStatus.classList.add('ok');
+      } else {
+        testStatus.textContent = res.error;
+        testStatus.classList.add('fail');
+      }
+    });
+
+    const mkSelectRow = (label, desc, node) => el('div', { class: 'setting' }, [
+      el('div', { class: 'setting-info' }, [el('b', { text: label }), el('span', { text: desc })]),
+      node,
+    ]);
+
     const themeRow = el('div', { class: 'setting' }, [
       el('div', { class: 'setting-info' }, [
         el('b', { text: '主题' }),
@@ -871,6 +1249,17 @@ const App = {
         mkSwitch('syncScroll', '滚动同步', '分屏时编辑器和预览一起滚动',
           (v) => { Preview.syncScroll = v; Preview.updateControls(); }),
         mkSwitch('autoSave', '自动保存', '停止输入 1.5 秒后自动写入磁盘'),
+        mkSwitch('trashInsteadOfDelete', '删除进回收站', '删除的文件移入系统回收站，而不是直接删除（关闭后删除不可恢复）'),
+        mkText('pasteImageDir', '图片粘贴目录', '粘贴截图时，相对当前笔记保存的文件夹名', {
+          validate: (v) => (/[\\/:*?"<>|]/.test(v) ? '文件夹名不能包含 \\ / : 等字符' : null),
+        }),
+        mkSection('AI 助手'),
+        mkSelectRow('服务预设', '自动填入地址与模型，API Key 需自行填写', presetSelect),
+        mkSelectRow('API 协议', '绝大多数服务用 OpenAI 兼容协议', protocolSelect),
+        mkSelectRow('服务地址', 'DeepSeek 填 https://api.deepseek.com；Ollama 填 http://127.0.0.1:11434/v1', mkAiInput('aiBaseUrl', 'text', 'width:200px')),
+        mkSelectRow('API Key', '存储在本机设置里；本地模型可留空', mkAiInput('aiApiKey', 'password', 'width:200px')),
+        mkSelectRow('模型', '如 deepseek-chat / glm-4-flash / gpt-4o-mini', mkAiInput('aiModel', 'text', 'width:200px')),
+        mkSelectRow('测试', '发一条最小请求验证配置是否可用', el('div', { style: 'display:flex;align-items:center;gap:8px' }, [testBtn, testStatus])),
       ]),
       footer: [
         el('button', {
@@ -879,8 +1268,9 @@ const App = {
             Object.assign(this.prefs, {
               fontSize: 13.5, tabSize: 2, wordWrap: false, minimap: false,
               livePreview: true, autoSave: false, syncScroll: true,
+              trashInsteadOfDelete: true, pasteImageDir: 'assets',
             });
-            for (const k of ['fontSize', 'tabSize', 'wordWrap', 'minimap', 'livePreview', 'autoSave', 'syncScroll']) {
+            for (const k of ['fontSize', 'tabSize', 'wordWrap', 'minimap', 'livePreview', 'autoSave', 'syncScroll', 'trashInsteadOfDelete', 'pasteImageDir']) {
               await window.notesAPI.setPref(k, this.prefs[k]);
             }
             Preview.syncScroll = true;
@@ -899,6 +1289,9 @@ const App = {
 
   showShortcuts() {
     const rows = [
+      ['快速打开笔记', 'Ctrl+P'],
+      ['命令面板', 'Ctrl+Shift+P'],
+      ['AI 助手', 'Ctrl+I'],
       ['打开笔记文件夹', 'Ctrl+O'],
       ['新建笔记', 'Ctrl+N'],
       ['新建文件夹', 'Ctrl+Shift+N'],
@@ -907,9 +1300,9 @@ const App = {
       ['关闭当前标签', 'Ctrl+W'],
       ['下一个标签', 'Ctrl+Tab'],
       ['查找全部', 'Ctrl+Shift+F'],
-      ['命令面板', 'Ctrl+P'],
       ['切换布局', 'Ctrl+E'],
       ['侧边栏开关', 'Ctrl+B'],
+      ['编辑器字号缩放', 'Ctrl+滚轮'],
       ['格式化文档', 'Alt+Shift+F'],
       ['跳到预览元素的源码', 'Ctrl+点击预览'],
       ['重命名（文件树上）', 'F2'],
@@ -934,6 +1327,9 @@ const App = {
     const hasVault = !!this.vaultPath;
     const hasFile = !!Tabs.activePath;
     const cmds = [
+      { label: 'AI 助手…', icon: 'sparkles', hint: 'Ctrl+I', run: () => AI.toggle() },
+      { label: '插入组件…', icon: 'plus', disabled: !hasFile, run: () => Templates.open() },
+      { label: '快速打开笔记…', icon: 'search', hint: 'Ctrl+P', disabled: !hasVault, run: () => this.openQuickOpen() },
       { label: '打开笔记文件夹', icon: 'folder', hint: 'Ctrl+O', run: () => this.openVault() },
       { label: '新建笔记', icon: 'file-plus', hint: 'Ctrl+N', disabled: !hasVault, run: () => this.createNote({}) },
       { label: '新建文件夹', icon: 'folder-plus', hint: 'Ctrl+Shift+N', disabled: !hasVault, run: () => this.createFolder({}) },
@@ -941,6 +1337,13 @@ const App = {
       { label: '全部保存', icon: 'save', hint: 'Ctrl+Alt+S', run: () => this.saveAll() },
       { label: '查找全部', icon: 'search', hint: 'Ctrl+Shift+F', disabled: !hasVault, run: () => Search.toggle(true) },
       { label: '刷新文件列表', icon: 'refresh', hint: 'F5', disabled: !hasVault, run: () => this.refreshVault() },
+      { separator: true },
+      { label: '大纲：当前笔记', icon: 'list', disabled: !hasFile, run: () => this.showOutline() },
+      { label: '反向链接：当前笔记', icon: 'link', disabled: !hasFile, run: () => this.showBacklinks() },
+      { label: '历史版本：当前笔记', icon: 'history', disabled: !hasFile, run: () => this.showHistory() },
+      { label: '复制笔记链接', icon: 'clipboard-copy', disabled: !hasFile, run: () => this.copyNoteLink() },
+      { label: '导出：单文件 HTML', icon: 'file-down', disabled: !hasFile, run: () => this.exportInline() },
+      { label: '导出：PDF', icon: 'file-output', disabled: !hasFile, run: () => this.exportPdfNote() },
       { separator: true },
       { label: '布局：仅编辑', icon: 'code', run: () => this.setMode('edit') },
       { label: '布局：左右分屏', icon: 'columns', run: () => { this.setSplitDir('right'); this.setMode('split'); } },
@@ -992,7 +1395,9 @@ const App = {
 
       const inInput = /^(INPUT|TEXTAREA)$/.test(e.target.tagName) || e.target.isContentEditable;
 
-      if (Key.match(e, 'Ctrl+P')) { e.preventDefault(); this.openPalette(); return; }
+      if (Key.match(e, 'Ctrl+P')) { e.preventDefault(); this.openQuickOpen(); return; }
+      if (Key.match(e, 'Ctrl+Shift+P')) { e.preventDefault(); this.openPalette(); return; }
+      if (Key.match(e, 'Ctrl+I')) { e.preventDefault(); AI.toggle(); return; }
       if (Key.match(e, 'Ctrl+Shift+F')) { e.preventDefault(); Search.toggle(); return; }
       if (Key.match(e, 'Ctrl+O')) { e.preventDefault(); this.openVault(); return; }
       if (Key.match(e, 'Ctrl+Shift+N')) { e.preventDefault(); this.createFolder({}); return; }
@@ -1013,6 +1418,7 @@ const App = {
       if (Key.match(e, 'Ctrl+S')) { e.preventDefault(); this.saveActive(); return; }
       if (e.key === 'Escape') {
         if (Menu.node) { Menu.close(); return; }
+        if (AI.open) { AI.close(); return; }
         if (Search.active) Search.toggle(false);
       }
     });
@@ -1158,6 +1564,95 @@ function collectFiles(node) {
   if (!node) return [];
   if (node.type === 'file') return [node.path];
   return (node.children || []).flatMap(collectFiles);
+}
+
+/** 在 HTML 源码里找所有指向 toRel 的 href/src 引用，返回命中行号列表 */
+function findRefsTo(content, fromRel, toRel) {
+  const lines = content.split('\n');
+  const hits = [];
+  const re = /(?:href|src)\s*=\s*(["'])([^"']+)\1/gi;
+  for (let i = 0; i < lines.length; i++) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(lines[i]))) {
+      let ref = m[2].split('#')[0].split('?')[0];
+      if (!ref || /^(https?:|data:|notes:|blob:|\/\/|mailto:)/i.test(ref)) continue;
+      try { ref = decodeURIComponent(ref); } catch { /* 保持原样 */ }
+      if (PathUtil.resolveRel(PathUtil.dir(fromRel), ref) === toRel) { hits.push(i + 1); break; }
+    }
+  }
+  return hits;
+}
+
+/** 时间戳 20250101-093000 → 2025-01-01 09:30:00 */
+function fmtStamp(ts) {
+  if (!/^\d{8}-\d{6}$/.test(ts || '')) return ts;
+  return `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)} ${ts.slice(9, 11)}:${ts.slice(11, 13)}:${ts.slice(13, 15)}`;
+}
+
+/** 历史快照预览（只读 iframe，允许脚本以渲染图表） */
+function showSnapshotPreview(rel, label, content) {
+  const iframe = el('iframe', { class: 'snapshot-frame', sandbox: 'allow-scripts' });
+  Modal.open({
+    title: `${PathUtil.base(rel)} — ${label}`,
+    icon: 'history',
+    width: 720,
+    body: iframe,
+    footer: [el('button', { class: 'btn btn-primary', text: '关闭', onclick: () => Modal.closeTop() })],
+  });
+  iframe.src = 'data:text/html;charset=utf-8,' + encodeURIComponent(content);
+}
+
+/** 把笔记里指向库内文件的 img/script/link 内联成 data URL / 内联代码，方便单文件分享 */
+async function inlineAssets(rel, htmlText) {
+  const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+  const dir = PathUtil.dir(rel);
+  const cache = new Map();
+
+  const fetchInside = async (ref) => {
+    const clean = (ref || '').split('?')[0].split('#')[0];
+    if (!clean || /^(https?:|data:|notes:|blob:|\/\/)/i.test(clean)) return null;
+    const target = PathUtil.resolveRel(dir, (() => { try { return decodeURIComponent(clean); } catch { return clean; } })());
+    if (!FileTree.findNode(target)) return null;      // 不在库内的引用不动
+    if (cache.has(target)) return cache.get(target);
+    cache.set(target, null);                          // 占位防循环
+    try {
+      const r = await fetch(PathUtil.toPreviewUrl(target));
+      const blob = await r.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(fr.error);
+        fr.readAsDataURL(blob);
+      });
+      cache.set(target, { blob, dataUrl });
+      return cache.get(target);
+    } catch {
+      return null;
+    }
+  };
+
+  for (const img of Array.from(doc.querySelectorAll('img[src]'))) {
+    const hit = await fetchInside(img.getAttribute('src'));
+    if (hit) img.setAttribute('src', hit.dataUrl);
+  }
+  for (const script of Array.from(doc.querySelectorAll('script[src]'))) {
+    const hit = await fetchInside(script.getAttribute('src'));
+    if (!hit) continue;
+    script.removeAttribute('src');
+    script.textContent = await hit.blob.text();
+  }
+  for (const linkEl of Array.from(doc.querySelectorAll('link[href]'))) {
+    const relAttr = (linkEl.getAttribute('rel') || '').toLowerCase();
+    const typeAttr = (linkEl.getAttribute('type') || '').toLowerCase();
+    if (!relAttr.includes('stylesheet') && typeAttr !== 'text/css' && !linkEl.getAttribute('href').endsWith('.css')) continue;
+    const hit = await fetchInside(linkEl.getAttribute('href'));
+    if (!hit) continue;
+    const style = doc.createElement('style');
+    style.textContent = await hit.blob.text();
+    linkEl.replaceWith(style);
+  }
+  return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
 }
 
 /* ═══════════════════════════════════════════════════════

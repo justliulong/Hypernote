@@ -761,6 +761,9 @@ handle('file:save', async (rel, content) => {
   if (!full) return { success: false, error: '路径无效' };
   await fsp.mkdir(path.dirname(full), { recursive: true });
 
+  // 本地历史：覆盖磁盘上不同的旧版本前，先把它存进库外历史目录
+  await snapshotHistory(rel, full);
+
   // 原子写：先写同目录的隐藏临时文件再 rename。
   // 写到一半崩溃/断电时，原笔记还是完整的旧版本，不会变成半截文件。
   const dir = path.dirname(full);
@@ -779,6 +782,300 @@ handle('file:save', async (rel, content) => {
   // 若保存的正是预览中的文件，同步缓冲
   if (state.liveFile === rel) state.liveContent = content;
   return { success: true, mtime: st.mtimeMs };
+});
+
+// ─── 本地历史 ───────────────────────────────────────────
+// 每次保存前，把磁盘上的旧版本快照到 userData/history/<库>/<相对路径>.<时间戳>.<后缀>
+// 快照存在笔记库外面，不污染文件树，也不会被 watcher 盯上。
+const HISTORY_KEEP = 50;
+
+function historyDirFor(rel) {
+  if (!state.vault) return null;
+  const key = Buffer.from(state.vault, 'utf-8').toString('base64url');
+  return path.join(app.getPath('userData'), 'history', key, rel);
+}
+
+async function snapshotHistory(rel, full) {
+  try {
+    const prev = await fsp.readFile(full, 'utf-8').catch(() => null);
+    if (prev === null) return;                       // 新文件没有旧版本
+    const st = await fsp.stat(full);
+    const histDir = historyDirFor(rel);
+    if (!histDir) return;
+    const ext = path.extname(rel) || '';
+    const base = path.basename(rel, ext);
+    const ts = formatStamp(st.mtime);
+    const dest = path.join(histDir, `${base}.${ts}${ext}`);
+    const same = await fsp.readFile(dest, 'utf-8').catch(() => null);
+    if (same === prev) return;                       // 这个版本已经存过
+    await fsp.mkdir(histDir, { recursive: true });
+    await fsp.writeFile(dest, prev, 'utf-8');
+    await pruneHistory(histDir, base, ext);
+  } catch { /* 历史是锦上添花，失败不影响保存 */ }
+}
+
+function formatStamp(ms) {
+  const d = new Date(ms);
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+async function pruneHistory(histDir, base, ext) {
+  const prefix = base + '.';
+  const entries = (await fsp.readdir(histDir).catch(() => []))
+    .filter((n) => n.startsWith(prefix) && n.endsWith(ext))
+    .sort();
+  while (entries.length > HISTORY_KEEP) {
+    await fsp.rm(path.join(histDir, entries.shift()), { force: true }).catch(() => {});
+  }
+}
+
+handle('history:list', async (rel) => {
+  const histDir = historyDirFor(rel);
+  if (!histDir) return { success: false, error: '未打开笔记库' };
+  const ext = path.extname(rel) || '';
+  const base = path.basename(rel, ext);
+  const prefix = base + '.';
+  const entries = (await fsp.readdir(histDir).catch(() => []))
+    .filter((n) => n.startsWith(prefix) && n.endsWith(ext))
+    .sort()
+    .reverse();
+  const versions = [];
+  for (const name of entries) {
+    const m = name.slice(prefix.length, name.length - ext.length);
+    if (!/^\d{8}-\d{6}$/.test(m)) continue;
+    const st = await fsp.stat(path.join(histDir, name)).catch(() => null);
+    versions.push({ ts: m, size: st ? st.size : 0 });
+  }
+  return { success: true, versions };
+});
+
+handle('history:read', async (rel, ts) => {
+  const histDir = historyDirFor(rel);
+  if (!histDir || !/^\d{8}-\d{6}$/.test(ts || '')) return { success: false, error: '路径无效' };
+  const ext = path.extname(rel) || '';
+  const base = path.basename(rel, ext);
+  const content = await fsp.readFile(path.join(histDir, `${base}.${ts}${ext}`), 'utf-8');
+  return { success: true, content };
+});
+
+// — 二进制文件（粘贴图片等）—
+handle('file:save-binary', async (rel, dataB64) => {
+  const full = insideVault(rel);
+  if (!full) return { success: false, error: '路径无效' };
+  await fsp.mkdir(path.dirname(full), { recursive: true });
+  await fsp.writeFile(full, Buffer.from(String(dataB64 || ''), 'base64'));
+  return { success: true, path: rel };
+});
+
+// — 导出 —
+// 弹出「另存为」对话框并写入内容（渲染进程已把 HTML 组织好）
+handle('app:save-as', async (defaultName, content) => {
+  if (!state.vault) return { success: false, error: '未打开笔记库' };
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: '导出为…',
+    defaultPath: path.join(app.getPath('downloads'), defaultName || 'export.html'),
+    filters: [{ name: 'HTML', extensions: ['html'] }],
+  });
+  if (res.canceled || !res.filePath) return { success: false, canceled: true };
+  await fsp.writeFile(res.filePath, content, 'utf-8');
+  return { success: true, path: res.filePath };
+});
+
+// 把笔记渲染成 PDF：隐藏窗口加载 notes:// 协议里的笔记（相对资源都能解析），再 printToPDF
+handle('export:pdf', async (rel) => {
+  const full = insideVault(rel);
+  if (!full) return { success: false, error: '路径无效' };
+
+  const win = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  try {
+    const url = 'notes://vault/' + rel.split('/').map(encodeURIComponent).join('/');
+    await win.loadURL(url);
+    // 等图表/脚本渲染：did-finish-load 之后再留一小段渲染时间
+    await new Promise((r) => setTimeout(r, 1200));
+    const buf = await win.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margin: { top: 0.6, bottom: 0.6, left: 0.5, right: 0.5 },
+    });
+    const res = await dialog.showSaveDialog(mainWindow, {
+      title: '导出 PDF',
+      defaultPath: path.join(app.getPath('downloads'), path.basename(rel, path.extname(rel)) + '.pdf'),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (res.canceled || !res.filePath) return { success: false, canceled: true };
+    await fsp.writeFile(res.filePath, buf);
+    return { success: true, path: res.filePath };
+  } finally {
+    win.destroy();
+  }
+});
+
+// ─── AI 助手 ────────────────────────────────────────────
+// API Key 只存在主进程的 prefs 里，渲染进程拿不到；对话请求由主进程代理，
+// 流式返回通过 ai:chunk / ai:done 广播给渲染进程。
+const AI_TIMEOUT = 120000;
+const aiRequests = new Map();   // id -> AbortController
+
+function aiConfig() {
+  return {
+    protocol: prefs.aiProtocol === 'anthropic' ? 'anthropic' : 'openai',
+    baseUrl: String(prefs.aiBaseUrl || '').trim().replace(/\/+$/, ''),
+    apiKey: String(prefs.aiApiKey || '').trim(),
+    model: String(prefs.aiModel || '').trim(),
+  };
+}
+
+function aiUrl(cfg, kind) {
+  // kind: 'chat' | 'test'；用户填到域名或 /v1 都能自动拼出完整端点
+  if (cfg.protocol === 'anthropic') {
+    return /\/messages$/.test(cfg.baseUrl) ? cfg.baseUrl : `${cfg.baseUrl}/v1/messages`;
+  }
+  return /\/chat\/completions$/.test(cfg.baseUrl) ? cfg.baseUrl : `${cfg.baseUrl}/chat/completions`;
+}
+
+function aiHeaders(cfg) {
+  if (cfg.protocol === 'anthropic') {
+    return { 'Content-Type': 'application/json', 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' };
+  }
+  const h = { 'Content-Type': 'application/json' };
+  if (cfg.apiKey) h.Authorization = `Bearer ${cfg.apiKey}`;
+  return h;
+}
+
+function aiBody(cfg, messages, { stream = true, maxTokens = 4096 } = {}) {
+  if (cfg.protocol === 'anthropic') {
+    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+    return JSON.stringify({
+      model: cfg.model,
+      max_tokens: maxTokens,
+      stream,
+      ...(system ? { system } : {}),
+      messages: messages.filter((m) => m.role !== 'system'),
+    });
+  }
+  return JSON.stringify({ model: cfg.model, messages, stream, max_tokens: maxTokens });
+}
+
+/** 从 SSE 响应里提取增量文本的解析器（非流式 JSON 在 aiRequest 里直接处理） */
+function aiChunkExtractor(cfg, contentType) {
+  if (!contentType.includes('text/event-stream')) return null;
+  if (cfg.protocol === 'anthropic') {
+    return (line) => {
+      if (!line.startsWith('data:')) return '';
+      try {
+        const evt = JSON.parse(line.slice(5).trim());
+        if (evt.type === 'content_block_delta') return evt.delta?.text || '';
+        if (evt.type === 'error') throw new Error(evt.error?.message || '流式响应错误');
+      } catch (e) { if (e instanceof SyntaxError) return ''; throw e; }
+      return '';
+    };
+  }
+  return (line) => {
+    if (!line.startsWith('data:')) return '';
+    const payload = line.slice(5).trim();
+    if (payload === '[DONE]') return '';
+    try {
+      const evt = JSON.parse(payload);
+      return evt.choices?.[0]?.delta?.content || '';
+    } catch { return ''; }
+  };
+}
+
+async function aiRequest(cfg, messages, { stream = true, maxTokens } = {}, onDelta) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('请求超时')), AI_TIMEOUT);
+  try {
+    const res = await fetch(aiUrl(cfg, 'chat'), {
+      method: 'POST',
+      headers: aiHeaders(cfg),
+      body: aiBody(cfg, messages, { stream, maxTokens }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 300)}` : ''}`);
+    }
+
+    const ctype = res.headers.get('content-type') || '';
+    if (!stream || !ctype.includes('text/event-stream')) {
+      const json = await res.json();
+      const text = cfg.protocol === 'anthropic'
+        ? (json.content || []).map((c) => c.text || '').join('')
+        : (json.choices?.[0]?.message?.content || '');
+      onDelta?.(text);
+      return text;
+    }
+
+    // SSE 流式
+    const extract = aiChunkExtractor(cfg, ctype);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let carry = '';
+    let full = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      carry += decoder.decode(value, { stream: true });
+      const lines = carry.split('\n');
+      carry = lines.pop();
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        const delta = extract(line);
+        if (delta) { full += delta; onDelta?.(delta); }
+      }
+    }
+    return full;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 发起对话：立即返回，流式内容通过 ai:chunk / ai:done 推送
+handle('ai:chat', async ({ id, messages }) => {
+  const cfg = aiConfig();
+  if (!cfg.baseUrl || !cfg.model) {
+    return { success: false, error: '请先在设置里配置 AI 服务地址和模型' };
+  }
+  const controller = new AbortController();
+  aiRequests.set(id, controller);
+
+  (async () => {
+    try {
+      // anthropic 的 system 由 aiBody 单独拆出；openai 直接透传
+      await aiRequest(cfg, messages, { stream: true }, (delta) => broadcast('ai:chunk', { id, delta }));
+      broadcast('ai:done', { id });
+    } catch (err) {
+      if (controller.signal.aborted || /aborted/i.test(String(err?.message))) broadcast('ai:done', { id, aborted: true });
+      else broadcast('ai:done', { id, error: err.message });
+    } finally {
+      aiRequests.delete(id);
+    }
+  })();
+  return { success: true };
+});
+
+handle('ai:abort', async ({ id }) => {
+  aiRequests.get(id)?.abort(new Error('aborted'));
+  return { success: true };
+});
+
+// 设置里的「测试连接」：发一个最小请求
+handle('ai:test', async () => {
+  const cfg = aiConfig();
+  if (!cfg.baseUrl || !cfg.model) return { success: false, error: '请先填写服务地址和模型' };
+  try {
+    const reply = await aiRequest(cfg, [{ role: 'user', content: '回复"连接成功"四个字' }], { stream: false, maxTokens: 16 });
+    return { success: true, reply: String(reply).trim().slice(0, 50) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 handle('file:create', async (rel, content = '') => {
@@ -824,22 +1121,25 @@ handle('fs:rename', async (oldRel, newRel) => {
   return { success: true, path: finalRel, renamed: finalRel !== newRel };
 });
 
-// 删除（文件夹递归删除）
+// 删除（文件夹递归删除；默认移入系统回收站，可在设置里改为永久删除）
 handle('fs:delete', async (rel) => {
   const full = insideVault(rel);
   if (!full) return { success: false, error: '路径无效' };
   const st = await fsp.stat(full);
+  const useTrash = prefs.trashInsteadOfDelete !== false;
   if (st.isDirectory()) {
     const entries = await fsp.readdir(full);
-    if (entries.length && !prefs.trashInsteadOfDelete) {
+    if (entries.length) {
       // 交给渲染进程二次确认（非空文件夹）
-      return { success: false, needsConfirm: true, count: entries.length };
+      return { success: false, needsConfirm: true, count: entries.length, trash: useTrash };
     }
-    await fsp.rm(full, { recursive: true, force: true });
-  } else {
-    await fsp.rm(full, { force: true });
   }
-  return { success: true };
+  if (useTrash) {
+    await shell.trashItem(full);
+  } else {
+    await fsp.rm(full, { recursive: true, force: true });
+  }
+  return { success: true, trashed: useTrash };
 });
 
 handle('fs:duplicate', async (rel) => {

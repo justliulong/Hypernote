@@ -2,7 +2,7 @@
   "name": "hypernote",
   "productName": "Hypernote",
   "desktopName": "app.hypernote",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Folder-based notes in HTML, with live preview and full JavaScript support",
   "main": "main.js",
   "scripts": {

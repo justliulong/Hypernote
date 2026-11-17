@@ -1,17 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#89b4fa"/>
-      <stop offset="100%" stop-color="#cba6f7"/>
+      <stop offset="0" stop-color="#89b4fa"/>
+      <stop offset="1" stop-color="#cba6f7"/>
     </linearGradient>
   </defs>
-  <rect width="256" height="256" rx="56" fill="url(#g)"/>
-  <!-- 一页纸的轮廓，暗示「笔记」 -->
-  <path d="M76 60h72l32 32v104a8 8 0 0 1-8 8H76a8 8 0 0 1-8-8V68a8 8 0 0 1 8-8z"
-        fill="none" stroke="#11111b" stroke-width="10" stroke-linejoin="round" opacity="0.35"/>
-  <path d="M148 60v32h32" fill="none" stroke="#11111b" stroke-width="10"
-        stroke-linejoin="round" opacity="0.35"/>
+  <!-- 便签轮廓：右上角斜切出折角 -->
+  <path d="M16.5 1H7.5A6.5 6.5 0 0 0 1 7.5v9A6.5 6.5 0 0 0 7.5 23h9a6.5 6.5 0 0 0 6.5-6.5V7.5Z"
+        fill="url(#g)"/>
+  <!-- 折角翻页 -->
+  <path d="M16.5 1v3.5A3 3 0 0 0 19.5 7.5H23Z" fill="#ffffff" opacity="0.4"/>
   <!-- H -->
-  <path d="M92 116v52M124 116v52M92 142h32" fill="none" stroke="#11111b"
-        stroke-width="14" stroke-linecap="round"/>
+  <path d="M8.6 7.75v8.5M15.4 7.75v8.5M8.6 12h6.8"
+        fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
 </svg>

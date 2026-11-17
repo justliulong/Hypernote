@@ -205,13 +205,13 @@ body {
   border: 0;
 }
 
-/* SVG 图标统一尺寸 */
+/* SVG 图标统一尺寸（描边宽度由 icons.js 内联属性统一控制） */
 .icon {
   width: 16px;
   height: 16px;
   flex: none;
-  stroke-width: 1.6;
   pointer-events: none;
 }
 .icon-sm { width: 14px; height: 14px; }
 .icon-lg { width: 20px; height: 20px; }
+.logo { display: block; width: 100%; height: 100%; }

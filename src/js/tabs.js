@@ -116,7 +116,7 @@ const Tabs = {
         dataset: { path: tab.path },
         title: tab.path,
       }, [
-        el('span', { class: 'tab-icon' }, [Icons.el(Fmt.iconName(tab.path), 'icon')]),
+        el('span', { class: 'tab-icon', dataset: { ext: Fmt.iconKind(tab.path) } }, [Icons.el(Fmt.iconName(tab.path), 'icon')]),
         el('span', { class: 'tab-title', text: tab.name }),
         el('span', { class: 'tab-dot' }),
         el('button', {

@@ -39,6 +39,7 @@ const Search = {
     });
     $('#search-close').addEventListener('click', () => this.toggle(false));
     $('#btn-collapse-search').addEventListener('click', () => this.toggle(false));
+    $('#btn-replace-all').addEventListener('click', () => this.replaceAll());
   },
 
   /* ─── 开关 ───────────────────────────────────────────── */
@@ -117,7 +118,65 @@ const Search = {
     this.results = [];
     this.countNode.textContent = '';
     this.listNode.innerHTML = '';
+    $('#btn-replace-all').classList.add('hidden');
     this.hideResultsPane();
+  },
+
+  /* ─── 替换全部 ───────────────────────────────────────── */
+  async replaceAll() {
+    if (!this.results.length || !this.query) return;
+    const targets = this.results.map((r) => r.path);
+    const dirtyTargets = targets.filter((p) => Tabs.has(p) && App.isDirty(p));
+
+    const replacement = await askText({
+      title: '替换全部',
+      icon: 'replace',
+      label: `把「${this.query}」替换为`,
+      placeholder: '替换为（留空即删除该词）',
+      confirmLabel: '下一步',
+    });
+    if (replacement === null) return;
+
+    const ok = await askConfirm({
+      title: '确认替换',
+      icon: 'alert-triangle',
+      danger: true,
+      message: `将在 <span class="mono">${targets.length}</span> 个文件中把 <code>${escapeHtml(this.query)}</code> 替换为 <code>${escapeHtml(replacement)}</code>。`,
+      detail: dirtyTargets.length
+        ? `<span class="mono">${dirtyTargets.length}</span> 个打开的标签有未保存修改，将被跳过。替换直接写入磁盘（旧版本自动存入历史）。`
+        : '替换会直接写入磁盘（旧版本自动存入历史，可从「历史版本」恢复）。',
+      confirmLabel: '全部替换',
+    });
+    if (!ok) return;
+
+    let files = 0;
+    let hits = 0;
+    let failed = 0;
+    let skipped = dirtyTargets.length;
+    for (const path of targets) {
+      if (Tabs.has(path) && App.isDirty(path)) continue;
+      const res = await window.notesAPI.readFile(path);
+      if (!res.success) { failed++; continue; }
+      const { text, count } = replaceAllIn(res.content, this.query, replacement, this.caseSensitive);
+      if (!count) continue;
+      const save = await window.notesAPI.saveFile(path, text);
+      if (!save.success) { failed++; continue; }
+      files++;
+      hits += count;
+      // 打开中的标签同步新内容，避免被 watcher 提示「外部修改」
+      if (Tabs.has(path)) {
+        App.savedContent.set(path, text);
+        Editor.refreshModel(path, text);
+        Editor.markSaved(path);
+        Tabs.markDirty(path);
+        if (path === Preview.target) Preview.refresh();
+      }
+    }
+
+    if (failed) Toast.error(`替换完成，但 ${failed} 个文件写入失败`);
+    else Toast.ok(`已在 ${files} 个文件中替换 ${hits} 处${skipped ? `，跳过 ${skipped} 个未保存标签` : ''}`);
+    Status.setMessage(`替换 ${hits} 处`);
+    if (this.query) this.run(this.query, { immediate: true });   // 刷新结果
   },
 
   render(res) {
@@ -125,6 +184,7 @@ const Search = {
     this.countNode.textContent = results.length
       ? `${results.length}${truncated ? '+' : ''} 个文件`
       : '无结果';
+    $('#btn-replace-all').classList.toggle('hidden', !results.length);
 
     this.listNode.innerHTML = '';
 
@@ -188,4 +248,16 @@ function escapeHtml(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/** 字面量全量替换（不受 $& 等特殊符号影响），返回新文本与替换次数 */
+function replaceAllIn(text, needle, replacement, caseSensitive) {
+  if (caseSensitive) {
+    const count = text.split(needle).length - 1;
+    return { text: count ? text.split(needle).join(replacement) : text, count };
+  }
+  const pattern = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let count = 0;
+  const out = text.replace(new RegExp(pattern, 'gi'), () => { count++; return replacement; });
+  return { text: out, count };
 }

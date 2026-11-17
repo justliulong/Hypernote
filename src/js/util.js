@@ -100,6 +100,25 @@ const PathUtil = {
       return null;
     }
   },
+  /** 从 fromRel 所在目录到 toRel 的相对路径（用于 href/src 引用） */
+  relTo(fromRel, toRel) {
+    const from = this.dir(fromRel).split('/').filter(Boolean);
+    const to = toRel.split('/').filter(Boolean);
+    let i = 0;
+    while (i < from.length && i < to.length - 1 && from[i] === to[i]) i++;
+    const up = from.length - i;
+    return [...Array(up).fill('..'), ...to.slice(i)].join('/') || to[to.length - 1];
+  },
+  /** 以 baseDir 为基准解析引用路径，得到库内规范相对路径 */
+  resolveRel(baseDir, ref) {
+    const parts = (baseDir ? baseDir.split('/').filter(Boolean) : []);
+    for (const seg of ref.split('/')) {
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') parts.pop();
+      else parts.push(seg);
+    }
+    return parts.join('/');
+  },
 };
 
 /* ─── 格式化 ───────────────────────────────────────────── */

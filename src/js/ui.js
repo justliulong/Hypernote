@@ -129,7 +129,11 @@ const Menu = {
       const cls = ['menu-item'];
       if (item.danger) cls.push('danger');
       if (item.disabled) cls.push('disabled');
-      const row = el('div', { class: cls.join(' '), role: 'menuitem' }, [
+      const row = el('div', {
+        class: cls.join(' '),
+        role: 'menuitem',
+        ...(item.title ? { title: item.title } : {}),
+      }, [
         item.icon ? Icons.el(item.icon) : el('span', { style: 'width:16px;flex:none' }),
         el('span', { class: 'label', text: item.label }),
         item.checked ? Icons.el('check', 'icon icon-sm') : null,
@@ -387,8 +391,8 @@ function showAbout() {
 const Palette = {
   entry: null,
 
-  /** commands: [{id, label, hint, icon, group, run}] | {separator:true} */
-  open(commands) {
+  /** commands: [{id, label, hint, icon, keywords, group, run}] | {separator:true} */
+  open(commands, { placeholder = '输入命令…' } = {}) {
     if (this.entry) { Modal.close(this.entry); this.entry = null; }
 
     let filtered = commands.slice();
@@ -400,7 +404,7 @@ const Palette = {
     const input = el('input', {
       class: 'palette-input',
       type: 'text',
-      placeholder: '输入命令…',
+      placeholder,
       spellcheck: 'false',
     });
     const list = el('div', { class: 'palette-list' });
@@ -444,9 +448,21 @@ const Palette = {
         filtered = commands.slice();
       } else {
         // 搜索时不要分隔线，它们会让结果显得断裂
+        // keywords 附加匹配文本（如文件路径），不参与显示
+        // 多个词（空格分隔）要求逐词命中，分数求和
+        const words = q.split(/\s+/).filter(Boolean);
         filtered = commands
           .filter((c) => !c.separator)
-          .map((cmd) => ({ cmd, score: fuzzyScore(cmd.label.toLowerCase(), q) }))
+          .map((cmd) => {
+            const text = `${cmd.label.toLowerCase()} ${(cmd.keywords || '').toLowerCase()}`;
+            let score = 0;
+            for (const w of words) {
+              const s = fuzzyScore(text, w);
+              if (!s) return { cmd, score: 0 };
+              score += s;
+            }
+            return { cmd, score };
+          })
           .filter((x) => x.score > 0)
           .sort((a, b) => b.score - a.score)
           .map((x) => x.cmd);

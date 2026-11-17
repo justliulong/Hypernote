@@ -27,7 +27,7 @@
           <span data-icon="menu"></span>
         </button>
         <div class="brand">
-          <span class="brand-mark">H</span>
+          <span class="brand-mark" data-logo></span>
         </div>
         <div class="vault-chip" title="当前笔记文件夹">
           <span id="vault-name" class="vault-name hidden"></span>
@@ -72,6 +72,9 @@
         <button class="icon-btn" id="btn-split-dir" title="分屏方向">
           <span data-icon="split-bottom"></span>
         </button>
+        <button class="icon-btn" id="btn-ai" title="AI 助手 (Ctrl+I)">
+          <span data-icon="sparkles"></span>
+        </button>
         <button class="icon-btn" id="btn-theme" title="切换主题">
           <span data-icon="moon"></span>
         </button>
@@ -106,6 +109,7 @@
         <!-- 搜索结果标题栏 -->
         <div class="sidebar-head hidden" id="search-head">
           <span class="title">搜索结果</span>
+          <button class="btn-mini hidden" id="btn-replace-all" title="把搜索命中的内容在所有文件中替换">替换全部</button>
           <button class="icon-btn" id="btn-collapse-search" title="返回文件列表">
             <span data-icon="x"></span>
           </button>
@@ -133,24 +137,24 @@
 
             <div class="welcome" id="welcome">
               <div class="welcome-inner">
-                <div class="welcome-mark">H</div>
+                <div class="welcome-mark" data-logo></div>
                 <h1>Hypernote</h1>
                 <p class="sub" id="welcome-vault-name"></p>
                 <div class="welcome-grid">
                   <div class="welcome-card">
-                    <span data-icon="folder"></span>
+                    <span class="card-icon" data-icon="folder"></span>
                     <div><b>基于文件夹</b><span>笔记就是你磁盘上的 .html 文件</span></div>
                   </div>
                   <div class="welcome-card">
-                    <span data-icon="code"></span>
+                    <span class="card-icon" data-icon="code"></span>
                     <div><b>完整能力</b><span>图表、动画、任何前端库都能用</span></div>
                   </div>
                   <div class="welcome-card">
-                    <span data-icon="eye"></span>
+                    <span class="card-icon" data-icon="eye"></span>
                     <div><b>实时预览</b><span>边写边看，无需保存</span></div>
                   </div>
                   <div class="welcome-card">
-                    <span data-icon="search"></span>
+                    <span class="card-icon" data-icon="search"></span>
                     <div><b>全文搜索</b><span>跨所有笔记查找内容</span></div>
                   </div>
                 </div>
@@ -158,7 +162,7 @@
                   <span data-icon="folder"></span>
                   <span>打开笔记文件夹</span>
                 </button>
-                <p class="welcome-hint">或按 Ctrl+O · 按 Ctrl+P 打开命令面板</p>
+                <p class="welcome-hint">或按 Ctrl+O · 按 Ctrl+P 快速打开笔记</p>
               </div>
             </div>
           </section>
@@ -262,6 +266,7 @@
   <script src="js/preview.js"></script>
   <script src="js/fileTree.js"></script>
   <script src="js/search.js"></script>
+  <script src="js/ai.js"></script>
   <script src="js/tabs.js"></script>
   <script src="js/app.js"></script>
 

@@ -34,6 +34,7 @@ const Editor = {
     }
 
     this.defineThemes();
+    this.registerCompletions();
 
     const host = $('#editor-host');
     if (!host) return;
@@ -108,9 +109,113 @@ const Editor = {
     // 编辑器内快捷键
     this.instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => App.saveActive());
     this.instance.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => this.format());
-    this.instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => App.openPalette());
+    this.instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => App.openQuickOpen());
+    this.instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyP, () => App.openPalette());
+    this.instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI, () => AI.toggle());
     // Ctrl+E 在三种布局间轮换
     this.instance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyE, () => App.cycleMode());
+
+    // 右键菜单加「插入组件」
+    this.instance.addAction({
+      id: 'hypernote-templates',
+      label: '插入组件…',
+      keybindings: [],
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.5,
+      run: () => Templates.open(),
+    });
+
+    // 粘贴图片 → 自动落盘并插入 <img>。
+    // Monaco 的 CopyPasteController 会在容器（editor-host）的 capture 阶段
+    // stopPropagation 接管 paste，所以必须挂到它的父级才能先拿到事件。
+    const dom = this.instance.getDomNode();
+    const pasteZone = dom.parentElement?.parentElement ?? dom;
+    pasteZone.addEventListener('paste', (e) => this.onPaste(e), true);
+    // Ctrl/Cmd + 滚轮调整字号
+    dom.addEventListener('wheel', (e) => this.onWheelZoom(e), { passive: false });
+  },
+
+  /** 粘贴板里有图片时接管事件，文本粘贴仍然交给 Monaco */
+  onPaste(e) {
+    const items = Array.from(e.clipboardData?.items || []);
+    const imgItem = items.find((it) => it.type.startsWith('image/'));
+    if (!imgItem) return;
+    const file = imgItem.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    e.stopPropagation();
+    App.handleImagePaste(file);
+  },
+
+  /** Ctrl/Cmd+滚轮 缩放编辑器字号（9–30，防抖持久化） */
+  onWheelZoom(e) {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const cur = Number(App.prefs.fontSize) || 13.5;
+    const next = Math.min(30, Math.max(9, cur + (e.deltaY < 0 ? 1 : -1)));
+    if (next === cur) return;
+    App.prefs.fontSize = next;
+    this.updateOptions({ fontSize: next });
+    Status.setMessage(`字号 ${next}`);
+    clearTimeout(this._fontSaveTimer);
+    this._fontSaveTimer = setTimeout(() => window.notesAPI.setPref('fontSize', next), 600);
+  },
+
+  /** href / src 里补全库内文件的相对路径 */
+  registerCompletions() {
+    if (this._completionsRegistered) return;
+    this._completionsRegistered = true;
+    monaco.languages.registerCompletionItemProvider('html', {
+      triggerCharacters: ['/', '.', '-', '_'],
+      provideCompletionItems: (model, position) => {
+        const before = model.getValueInRange({
+          startLineNumber: position.lineNumber, startColumn: 1,
+          endLineNumber: position.lineNumber, endColumn: position.column,
+        });
+        // 光标必须停在 href=" 或 src=" 的引号内
+        const m = before.match(/(?:href|src)\s*=\s*(["'])([^"']*)$/);
+        if (!m) return { suggestions: [] };
+        const typed = m[2];
+        const active = this.activePath;
+        if (!active || !App.vaultPath) return { suggestions: [] };
+
+        const files = [];
+        (function walk(nodes) {
+          for (const n of nodes || []) {
+            if (n.type === 'folder') walk(n.children);
+            else files.push(n.path);
+          }
+        })(App.tree);
+
+        const seen = new Set();
+        const suggestions = [];
+        for (const rel of files) {
+          if (rel === active) continue;
+          const target = PathUtil.relTo(active, rel);
+          if (seen.has(target)) continue;
+          seen.add(target);
+          suggestions.push({
+            label: target,
+            kind: monaco.languages.CompletionItemKind.File,
+            detail: rel,
+            insertText: target,
+            range: new monaco.Range(
+              position.lineNumber, position.column - typed.length,
+              position.lineNumber, position.column,
+            ),
+          });
+        }
+        return { suggestions: suggestions.slice(0, 80) };
+      },
+    });
+  },
+
+  /** 在光标处插入文本 */
+  insertText(text) {
+    if (!this.ready) return;
+    const sel = this.instance.getSelection();
+    this.instance.executeEdits('hypernote', [{ range: sel, text, forceMoveMarkers: true }]);
+    this.instance.focus();
   },
 
   /* ─── 主题 ───────────────────────────────────────────── */

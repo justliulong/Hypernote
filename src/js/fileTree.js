@@ -93,7 +93,7 @@ const FileTree = {
 
     // 图标
     if (isFolder) {
-      row.appendChild(el('span', { class: 'tree-icon' }, [Icons.el(open ? 'folder' : 'folder')]));
+      row.appendChild(el('span', { class: 'tree-icon' }, [Icons.el(open ? 'folder-open' : 'folder')]));
     } else {
       const kind = Fmt.iconKind(node.path);
       const iconBox = el('span', { class: 'tree-icon', dataset: { ext: kind } }, [Icons.el(Fmt.iconName(node.path))]);

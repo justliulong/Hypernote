@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('notesAPI', {
   // ── 文件 ──
   readFile: invoke('file:read'),
   saveFile: invoke('file:save'),
+  saveBinary: invoke('file:save-binary'),
   createFile: invoke('file:create'),
   createFolder: invoke('folder:create'),
   uniqueName: invoke('names:unique'),
@@ -53,6 +54,19 @@ contextBridge.exposeInMainWorld('notesAPI', {
   deleteEntry: invoke('fs:delete'),
   duplicateEntry: invoke('fs:duplicate'),
   revealEntry: invoke('fs:reveal'),
+
+  // ── 本地历史 / 导出 ──
+  historyList: invoke('history:list'),
+  historyRead: invoke('history:read'),
+  saveAs: invoke('app:save-as'),
+  exportPdf: invoke('export:pdf'),
+
+  // ── AI 助手 ──
+  aiChat: invoke('ai:chat'),
+  aiAbort: invoke('ai:abort'),
+  aiTest: invoke('ai:test'),
+  onAiChunk: (cb) => on('ai:chunk', cb),
+  onAiDone: (cb) => on('ai:done', cb),
 
   // ── 搜索 ──
   search: invoke('search:query'),
