@@ -14,7 +14,7 @@
 #   4. 推到 aur.archlinux.org/hypernote-bin.git
 
 pkgname=hypernote-bin
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Folder-based notes in HTML, with live preview and full JavaScript support"
 arch=('x86_64')
@@ -57,7 +57,7 @@ source=(
   'LICENSE'
 )
 sha256sums=(
-  'fe1f2181c06393dcd2022005bffdc410012f912c388b8508902c1707c3aec713'
+  'b0c784e9643fca364c697cd4522eb212f255570343ebbb9bb800a528de63725d'
   '080e474517e1d125b003be32c21fac5419b77727c849d4590ddef0b4abf5d7d5'
 )
 
